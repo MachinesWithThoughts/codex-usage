@@ -27,6 +27,7 @@ That means:
 
 - `uv`
 - Python 3.11 or newer
+- Uses UV and launchable via command-line
 - network access to the OpenAI API when adding accounts or displaying usage
 - an OpenAI Admin API key for each organization/account you want to track
 
@@ -43,36 +44,23 @@ That means:
 From the project directory:
 
 ```bash
-cd /tmp/codex-usage-copy
-uv run python -m codex_usage.cli --help
+./codex_usage.py --help
 ```
 
 This invocation does not require installing the package first and works cleanly in a restricted environment because it runs the module directly.
-
-If you want to keep the command short, you can add a local shell alias such as:
-
-```bash
-alias codex-usage='uv run python -m codex_usage.cli'
-```
-
-Then use:
-
-```bash
-codex-usage --help
-```
 
 ## Commands
 
 ### Show help
 
 ```bash
-uv run python -m codex_usage.cli --help
+./codex-usage.py --help
 ```
 
 ### Add an account
 
 ```bash
-uv run python -m codex_usage.cli --add-account
+./codex-usage.py --add-account
 ```
 
 The command will prompt for:
@@ -100,7 +88,7 @@ Behavior:
 ### Display usage
 
 ```bash
-uv run python -m codex_usage.cli --display-usage
+./codex-usage.py --display-usage
 ```
 
 This command:
