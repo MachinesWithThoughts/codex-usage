@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import webbrowser
 from datetime import datetime, timezone
@@ -20,9 +21,22 @@ from .oauth import (
     resolve_identity,
 )
 from .store import iso_to_epoch_seconds, load_store, save_store, upsert_account
-from .usage import fetch_usage, format_reset
+from .usage import fetch_usage
 
 REFRESH_SKEW_SECONDS = 60
+ANSI_RESET = "\033[0m"
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_ORANGE = "\033[38;5;208m"
+LINE_COLORS = [
+    "\033[36m",  # cyan
+    "\033[35m",  # magenta
+    "\033[34m",  # blue
+    "\033[94m",  # bright blue
+    "\033[96m",  # bright cyan
+]
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _eprint(message: str) -> None:
@@ -146,55 +160,125 @@ def _ensure_fresh_account_tokens(account: dict[str, Any], timeout: float) -> tup
     return account, True
 
 
-def _format_text_usage(results: list[dict[str, Any]]) -> str:
-    headers = ["Account", "Status", "Plan", "Windows", "Error"]
+def _format_text_usage(results: list[dict[str, Any]], *, now_ms: int | None = None) -> str:
+    headers = ["#", "Account", "Status", "Plan", "Windows", "Error"]
     rows: list[list[str]] = []
-    for result in results:
+    for index, result in enumerate(results, start=1):
+        line_color = LINE_COLORS[(index - 1) % len(LINE_COLORS)]
         if result["status"] != "ok":
             rows.append(
                 [
-                    str(result.get("label") or "<unknown>"),
-                    "error",
-                    "-",
-                    "-",
-                    str(result.get("error") or "unknown error"),
+                    _color_line_cell(str(index), line_color),
+                    _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+                    _color_line_cell("error", line_color),
+                    _color_line_cell("-", line_color),
+                    _color_line_cell("-", line_color),
+                    _color_line_cell(str(result.get("error") or "unknown error"), line_color),
                 ]
             )
             continue
 
         windows = result.get("windows") or []
         if not windows:
-            windows_text = "none"
+            windows_text = _color_line_cell("none", line_color)
         else:
             windows_text = ", ".join(
-                f"{window['label']} {window['used_percent']:.1f}% reset={format_reset(window.get('reset_at_ms'))}"
+                _format_window_entry(window, line_color, now_ms=now_ms)
                 for window in windows
             )
         rows.append(
             [
-                str(result.get("label") or "<unknown>"),
-                "ok",
-                str(result.get("plan") or "unknown"),
+                _color_line_cell(str(index), line_color),
+                _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+                _color_line_cell("ok", line_color),
+                _color_line_cell(str(result.get("plan") or "unknown"), line_color),
                 windows_text,
-                "-",
+                _color_line_cell("-", line_color),
             ]
         )
 
     widths = [len(h) for h in headers]
     for row in rows:
         for idx, value in enumerate(row):
-            widths[idx] = max(widths[idx], len(value))
+            widths[idx] = max(widths[idx], _visible_len(value))
 
     def divider() -> str:
         return "+" + "+".join("-" * (w + 2) for w in widths) + "+"
 
     def render_row(values: list[str]) -> str:
-        return "| " + " | ".join(value.ljust(widths[idx]) for idx, value in enumerate(values)) + " |"
+        return "| " + " | ".join(_pad_ansi(value, widths[idx]) for idx, value in enumerate(values)) + " |"
 
     lines = [divider(), render_row(headers), divider()]
     lines.extend(render_row(row) for row in rows)
     lines.append(divider())
     return "\n".join(lines)
+
+
+def _format_window_entry(window: dict[str, Any], line_color: str, *, now_ms: int | None = None) -> str:
+    label_text = _color_line_cell(str(window["label"]), line_color)
+    available_percent = _resolve_available_percent(window)
+    percent_text = _colorize_percent(available_percent, continue_color=line_color)
+    reset_value = _format_relative_reset(window.get("reset_at_ms"), now_ms=now_ms)
+    reset_text = _color_line_cell(f"left={reset_value}", line_color)
+    return f"{label_text} available={percent_text} {reset_text}"
+
+
+def _format_relative_reset(reset_at_ms: Any, *, now_ms: int | None = None) -> str:
+    if not isinstance(reset_at_ms, int) or reset_at_ms <= 0:
+        return "unknown"
+    current_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    remaining_ms = max(0, reset_at_ms - current_ms)
+    total_minutes = remaining_ms // 60_000
+    days = total_minutes // (24 * 60)
+    hours = (total_minutes % (24 * 60)) // 60
+    minutes = total_minutes % 60
+    return f"{days}-days {hours}-hrs {minutes}-minutes"
+
+
+def _resolve_available_percent(window: dict[str, Any]) -> float:
+    raw = window.get("used_percent")
+    used = 0.0
+    if isinstance(raw, (int, float)):
+        used = float(raw)
+    else:
+        try:
+            used = float(raw)
+        except (TypeError, ValueError):
+            used = 0.0
+    available = 100.0 - used
+    if available < 0:
+        return 0.0
+    if available > 100:
+        return 100.0
+    return available
+
+
+def _colorize_percent(value: float, *, continue_color: str = "") -> str:
+    text = f"{value:.1f}%"
+    if value <= 0:
+        color = ANSI_RED
+    elif value >= 100:
+        color = ANSI_GREEN
+    elif value >= 50:
+        color = ANSI_YELLOW
+    else:
+        color = ANSI_ORANGE
+    return f"{color}{text}{ANSI_RESET}{continue_color}"
+
+
+def _color_line_cell(value: str, line_color: str) -> str:
+    return f"{line_color}{value}{ANSI_RESET}"
+
+
+def _visible_len(value: str) -> int:
+    return len(ANSI_RE.sub("", value))
+
+
+def _pad_ansi(value: str, width: int) -> str:
+    pad = width - _visible_len(value)
+    if pad <= 0:
+        return value
+    return f"{value}{' ' * pad}"
 
 
 def _handle_show_usage(store_path: Path, timeout: float, as_json: bool) -> int:
