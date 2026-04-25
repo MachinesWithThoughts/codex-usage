@@ -147,25 +147,53 @@ def _ensure_fresh_account_tokens(account: dict[str, Any], timeout: float) -> tup
 
 
 def _format_text_usage(results: list[dict[str, Any]]) -> str:
-    lines: list[str] = []
+    headers = ["Account", "Status", "Plan", "Windows", "Error"]
+    rows: list[list[str]] = []
     for result in results:
         if result["status"] != "ok":
-            lines.append(
-                f"{result['label']}: error={result['error']}"
+            rows.append(
+                [
+                    str(result.get("label") or "<unknown>"),
+                    "error",
+                    "-",
+                    "-",
+                    str(result.get("error") or "unknown error"),
+                ]
             )
             continue
 
-        line = f"{result['label']}: plan={result.get('plan') or 'unknown'}"
-        lines.append(line)
         windows = result.get("windows") or []
         if not windows:
-            lines.append("  windows: none")
-            continue
-        rendered = ", ".join(
-            f"{window['label']} {window['used_percent']:.1f}% reset={format_reset(window.get('reset_at_ms'))}"
-            for window in windows
+            windows_text = "none"
+        else:
+            windows_text = ", ".join(
+                f"{window['label']} {window['used_percent']:.1f}% reset={format_reset(window.get('reset_at_ms'))}"
+                for window in windows
+            )
+        rows.append(
+            [
+                str(result.get("label") or "<unknown>"),
+                "ok",
+                str(result.get("plan") or "unknown"),
+                windows_text,
+                "-",
+            ]
         )
-        lines.append(f"  windows: {rendered}")
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+
+    def divider() -> str:
+        return "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+
+    def render_row(values: list[str]) -> str:
+        return "| " + " | ".join(value.ljust(widths[idx]) for idx, value in enumerate(values)) + " |"
+
+    lines = [divider(), render_row(headers), divider()]
+    lines.extend(render_row(row) for row in rows)
+    lines.append(divider())
     return "\n".join(lines)
 
 
