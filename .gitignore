@@ -5,5 +5,5 @@ __pycache__/
 
 src/*.egg-info/
 src/**/*.egg-info/
-
-auth.json
+auth.json*
+resume-codex.sh
