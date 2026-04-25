@@ -5,6 +5,7 @@ import hashlib
 import json
 import secrets
 import string
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -89,7 +90,14 @@ def sanitize_error_text(value: str) -> str:
     return " ".join(cleaned.split())
 
 
-def post_form(url: str, body: dict[str, str], timeout: float) -> dict[str, Any]:
+def _debug_dump_raw(debug: bool, label: str, raw_text: str) -> None:
+    if not debug:
+        return
+    print(f"[debug] {label}", file=sys.stderr)
+    print(raw_text, file=sys.stderr)
+
+
+def post_form(url: str, body: dict[str, str], timeout: float, *, debug: bool = False) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -99,9 +107,12 @@ def post_form(url: str, body: dict[str, str], timeout: float) -> dict[str, Any]:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return parse_json_object(resp.read().decode("utf-8"))
+            raw_text = resp.read().decode("utf-8")
+            _debug_dump_raw(debug, f"oauth response {resp.status} {url}", raw_text)
+            return parse_json_object(raw_text)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        _debug_dump_raw(debug, f"oauth response {exc.code} {url}", detail)
         safe_detail = sanitize_error_text(detail)
         raise RuntimeError(f"OAuth request failed ({exc.code}): {safe_detail}") from exc
     except urllib.error.URLError as exc:
@@ -119,7 +130,9 @@ def _resolve_token_expiry_epoch_seconds(token_response: dict[str, Any], access_t
     return jwt_expiry if jwt_expiry is not None else now
 
 
-def exchange_authorization_code(code: str, code_verifier: str, timeout: float) -> dict[str, Any]:
+def exchange_authorization_code(
+    code: str, code_verifier: str, timeout: float, *, debug: bool = False
+) -> dict[str, Any]:
     payload = post_form(
         f"{OPENAI_AUTH_BASE_URL}/oauth/token",
         {
@@ -130,6 +143,7 @@ def exchange_authorization_code(code: str, code_verifier: str, timeout: float) -
             "code_verifier": code_verifier,
         },
         timeout=timeout,
+        debug=debug,
     )
     access, refresh = _extract_oauth_tokens(payload, require_refresh=True, context="OAuth exchange")
     payload["access_token"] = access
@@ -138,7 +152,7 @@ def exchange_authorization_code(code: str, code_verifier: str, timeout: float) -
     return payload
 
 
-def refresh_access_token(refresh_token: str, timeout: float) -> dict[str, Any]:
+def refresh_access_token(refresh_token: str, timeout: float, *, debug: bool = False) -> dict[str, Any]:
     payload = post_form(
         f"{OPENAI_AUTH_BASE_URL}/oauth/token",
         {
@@ -147,6 +161,7 @@ def refresh_access_token(refresh_token: str, timeout: float) -> dict[str, Any]:
             "client_id": OPENAI_CODEX_CLIENT_ID,
         },
         timeout=timeout,
+        debug=debug,
     )
     access, returned_refresh = _extract_oauth_tokens(
         payload, require_refresh=False, context="OAuth refresh"

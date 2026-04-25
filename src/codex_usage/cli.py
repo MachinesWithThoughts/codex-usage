@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import queue
 import re
+import select
 import sys
+import termios
+import threading
+import tty
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .oauth import (
     build_authorize_url,
@@ -24,6 +30,7 @@ from .store import iso_to_epoch_seconds, load_store, save_store, upsert_account
 from .usage import fetch_usage
 
 REFRESH_SKEW_SECONDS = 60
+AUTO_REFRESH_SECONDS = 10 * 60
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
@@ -60,17 +67,18 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="codex-usage.py",
         description="OpenClaw-aligned Codex OAuth account manager and usage viewer.",
     )
-    action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--add-account", action="store_true", help="Authenticate or re-authenticate an account.")
-    action.add_argument("--show-usage", action="store_true", help="Fetch current usage for all stored accounts.")
+    parser.add_argument("--add-account", action="store_true", help="Authenticate or re-authenticate an account.")
+    parser.add_argument("--show-usage", action="store_true", help="Fetch current usage for all stored accounts.")
     parser.add_argument("--auth-file", default="auth.json", help="Path to auth store (default: auth.json).")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds.")
     parser.add_argument("--json", action="store_true", help="Print --show-usage output as JSON.")
+    parser.add_argument("--tui", action="store_true", help="Interactive TUI mode for --show-usage.")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
+    parser.add_argument("--debug", action="store_true", help="Dump raw API response output to stderr.")
     return parser
 
 
-def _handle_add_account(store_path: Path, timeout: float, no_open: bool) -> int:
+def _handle_add_account(store_path: Path, timeout: float, no_open: bool, debug: bool) -> int:
     store = load_store(store_path)
     code_verifier, code_challenge = generate_pkce_pair()
     state = generate_state()
@@ -86,7 +94,7 @@ def _handle_add_account(store_path: Path, timeout: float, no_open: bool) -> int:
 
     callback_input = input("Callback URL or code: ").strip()
     code = parse_callback_input(callback_input, state)
-    tokens = exchange_authorization_code(code, code_verifier, timeout=timeout)
+    tokens = exchange_authorization_code(code, code_verifier, timeout=timeout, debug=debug)
 
     identity = resolve_identity(tokens["access_token"])
     account_id = identity.get("account_id")
@@ -129,13 +137,15 @@ def _handle_add_account(store_path: Path, timeout: float, no_open: bool) -> int:
     return 0
 
 
-def _ensure_fresh_account_tokens(account: dict[str, Any], timeout: float) -> tuple[dict[str, Any], bool]:
+def _ensure_fresh_account_tokens(
+    account: dict[str, Any], timeout: float, *, debug: bool = False
+) -> tuple[dict[str, Any], bool]:
     now = int(time.time())
     expires = iso_to_epoch_seconds(account["expires_at"])
     if expires > now + REFRESH_SKEW_SECONDS:
         return account, False
 
-    refreshed = refresh_access_token(account["refresh_token"], timeout=timeout)
+    refreshed = refresh_access_token(account["refresh_token"], timeout=timeout, debug=debug)
     identity = resolve_identity(refreshed["access_token"], fallback_email=account.get("email"))
 
     account["access_token"] = refreshed["access_token"]
@@ -160,12 +170,31 @@ def _ensure_fresh_account_tokens(account: dict[str, Any], timeout: float) -> tup
     return account, True
 
 
-def _format_text_usage(results: list[dict[str, Any]], *, now_ms: int | None = None) -> str:
+def _format_text_usage(
+    results: list[dict[str, Any]],
+    *,
+    now_ms: int | None = None,
+    last_capture_time: str | None = None,
+) -> str:
     headers = ["#", "Account", "Status", "Plan", "Windows", "Error"]
     rows: list[list[str]] = []
     for index, result in enumerate(results, start=1):
         line_color = LINE_COLORS[(index - 1) % len(LINE_COLORS)]
-        if result["status"] != "ok":
+        status = str(result.get("status") or "")
+        if status == "pending":
+            rows.append(
+                [
+                    _color_line_cell(str(index), line_color),
+                    _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+                    _color_line_cell("pending", line_color),
+                    _color_line_cell("-", line_color),
+                    _color_line_cell("refreshing...", line_color),
+                    _color_line_cell("-", line_color),
+                ]
+            )
+            continue
+
+        if status != "ok":
             rows.append(
                 [
                     _color_line_cell(str(index), line_color),
@@ -208,7 +237,11 @@ def _format_text_usage(results: list[dict[str, Any]], *, now_ms: int | None = No
     def render_row(values: list[str]) -> str:
         return "| " + " | ".join(_pad_ansi(value, widths[idx]) for idx, value in enumerate(values)) + " |"
 
-    lines = [divider(), render_row(headers), divider()]
+    lines: list[str] = []
+    if last_capture_time:
+        lines.append(f"Last capture: {last_capture_time}")
+        lines.append("")
+    lines.extend([divider(), render_row(headers), divider()])
     lines.extend(render_row(row) for row in rows)
     lines.append(divider())
     return "\n".join(lines)
@@ -307,7 +340,286 @@ def _pad_ansi(value: str, width: int) -> str:
     return f"{value}{' ' * pad}"
 
 
-def _handle_show_usage(store_path: Path, timeout: float, as_json: bool) -> int:
+def _capture_timestamp() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _refresh_single_account(
+    account: dict[str, Any], *, timeout: float, debug: bool
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    working = dict(account)
+    label = working.get("email") or working.get("account_id") or "<unknown>"
+    was_updated = False
+    captured_at = _capture_timestamp()
+    try:
+        _, was_updated = _ensure_fresh_account_tokens(working, timeout, debug=debug)
+        usage = fetch_usage(
+            working["access_token"],
+            working.get("account_id"),
+            timeout,
+            debug=debug,
+        )
+        result = {
+            "label": label,
+            "account_id": working.get("account_id"),
+            "email": working.get("email"),
+            "status": "ok",
+            "captured_at": captured_at,
+            "plan": usage.get("plan"),
+            "windows": usage.get("windows", []),
+        }
+    except Exception as exc:
+        result = {
+            "label": label,
+            "account_id": working.get("account_id"),
+            "email": working.get("email"),
+            "status": "error",
+            "captured_at": captured_at,
+            "error": str(exc),
+        }
+    return working, result, was_updated
+
+
+def _refresh_accounts_threaded(
+    accounts: list[dict[str, Any]],
+    *,
+    timeout: float,
+    debug: bool,
+    on_update: Callable[[list[dict[str, Any]], int, int], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    total = len(accounts)
+    refreshed_accounts = [dict(account) for account in accounts]
+    results: list[dict[str, Any]] = []
+    for account in accounts:
+        label = account.get("email") or account.get("account_id") or "<unknown>"
+        results.append(
+            {
+                "label": label,
+                "account_id": account.get("account_id"),
+                "email": account.get("email"),
+                "status": "pending",
+                "captured_at": "-",
+            }
+        )
+
+    updates: "queue.Queue[tuple[int, dict[str, Any], dict[str, Any], bool]]" = queue.Queue()
+
+    def worker(index: int, account: dict[str, Any]) -> None:
+        updated_account, result, was_updated = _refresh_single_account(
+            account,
+            timeout=timeout,
+            debug=debug,
+        )
+        updates.put((index, updated_account, result, was_updated))
+
+    threads: list[threading.Thread] = []
+    for idx, account in enumerate(accounts):
+        thread = threading.Thread(target=worker, args=(idx, dict(account)), daemon=True)
+        threads.append(thread)
+        thread.start()
+
+    updated_any = False
+    completed = 0
+    while completed < total:
+        idx, updated_account, result, was_updated = updates.get()
+        refreshed_accounts[idx] = updated_account
+        results[idx] = result
+        updated_any = updated_any or was_updated
+        completed += 1
+        if on_update is not None:
+            on_update(list(results), completed, total)
+
+    for thread in threads:
+        thread.join()
+
+    return refreshed_accounts, results, updated_any
+
+
+def _clear_screen() -> None:
+    print("\033[2J\033[H", end="", flush=True)
+
+
+def _render_tui(
+    results: list[dict[str, Any]],
+    *,
+    completed: int,
+    total: int,
+    refreshing: bool,
+    auto_refresh: bool,
+    next_refresh_at: float | None,
+    last_capture_time: str | None,
+) -> None:
+    sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
+    status = f"Refreshing {completed}/{total}..." if refreshing else "Idle"
+    auto_state = "OFF"
+    if auto_refresh and next_refresh_at is not None:
+        remaining = max(0, int(next_refresh_at - time.time()))
+        mins = remaining // 60
+        secs = remaining % 60
+        auto_state = f"ON (next in {mins:02d}:{secs:02d})"
+    _clear_screen()
+    print("codex-usage TUI")
+    print("Press SPACE to refresh all accounts, w to toggle auto-refresh (10m), q to quit.")
+    print(f"Status: {status}")
+    print(f"Auto-refresh: {auto_state}")
+    print(f"Last capture: {last_capture_time or '-'}")
+    print()
+    print(_format_text_usage(sorted_results))
+    sys.stdout.flush()
+
+
+@contextlib.contextmanager
+def _raw_stdin():
+    if not sys.stdin.isatty():
+        yield False
+        return
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield True
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)
+
+
+def _poll_keypress(timeout_seconds: float) -> str | None:
+    if not sys.stdin.isatty():
+        return None
+    readable, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+    if not readable:
+        return None
+    data = os.read(sys.stdin.fileno(), 1)
+    if not data:
+        return None
+    try:
+        return data.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _handle_show_usage_tui(store_path: Path, timeout: float, debug: bool) -> int:
+    store = load_store(store_path)
+    accounts = store.get("accounts", [])
+    if not accounts:
+        _eprint(f"No accounts found in {store_path}. Add one with --add-account.")
+        return 1
+    if not sys.stdout.isatty() or not sys.stdin.isatty():
+        _eprint("TUI requires an interactive terminal; falling back to regular --show-usage output.")
+        return _handle_show_usage(store_path, timeout=timeout, as_json=False, debug=debug)
+
+    with _raw_stdin() as raw_ok:
+        if not raw_ok:
+            _eprint("Failed to enable terminal raw mode; falling back to regular --show-usage output.")
+            return _handle_show_usage(store_path, timeout=timeout, as_json=False, debug=debug)
+
+        pending_results = []
+        for account in accounts:
+            label = account.get("email") or account.get("account_id") or "<unknown>"
+            pending_results.append(
+                {
+                    "label": label,
+                    "account_id": account.get("account_id"),
+                    "email": account.get("email"),
+                    "status": "pending",
+                    "captured_at": "-",
+                }
+            )
+
+        results = pending_results
+        auto_refresh = False
+        next_refresh_at: float | None = None
+        last_capture_time: str | None = None
+        while True:
+            _render_tui(
+                results,
+                completed=0,
+                total=len(accounts),
+                refreshing=True,
+                auto_refresh=auto_refresh,
+                next_refresh_at=next_refresh_at,
+                last_capture_time=last_capture_time,
+            )
+
+            def on_update(snapshot: list[dict[str, Any]], completed: int, total: int) -> None:
+                nonlocal results
+                results = snapshot
+                _render_tui(
+                    results,
+                    completed=completed,
+                    total=total,
+                    refreshing=True,
+                    auto_refresh=auto_refresh,
+                    next_refresh_at=next_refresh_at,
+                    last_capture_time=last_capture_time,
+                )
+
+            refreshed_accounts, results, updated_any = _refresh_accounts_threaded(
+                accounts,
+                timeout=timeout,
+                debug=debug,
+                on_update=on_update,
+            )
+            accounts = refreshed_accounts
+            if updated_any:
+                store["accounts"] = accounts
+                save_store(store_path, store)
+            last_capture_time = _capture_timestamp()
+            if auto_refresh:
+                next_refresh_at = time.time() + AUTO_REFRESH_SECONDS
+
+            _render_tui(
+                results,
+                completed=len(accounts),
+                total=len(accounts),
+                refreshing=False,
+                auto_refresh=auto_refresh,
+                next_refresh_at=next_refresh_at,
+                last_capture_time=last_capture_time,
+            )
+
+            while True:
+                wait_seconds = 0.2
+                if auto_refresh and next_refresh_at is not None:
+                    now = time.time()
+                    if now >= next_refresh_at:
+                        break
+                    wait_seconds = max(0.0, min(0.2, next_refresh_at - now))
+                key = _poll_keypress(wait_seconds)
+                if key is None:
+                    if auto_refresh:
+                        _render_tui(
+                            results,
+                            completed=len(accounts),
+                            total=len(accounts),
+                            refreshing=False,
+                            auto_refresh=auto_refresh,
+                            next_refresh_at=next_refresh_at,
+                            last_capture_time=last_capture_time,
+                        )
+                    continue
+                if key == "q":
+                    has_success = any(item.get("status") == "ok" for item in results)
+                    return 0 if has_success else 1
+                if key == " ":
+                    if auto_refresh:
+                        next_refresh_at = time.time() + AUTO_REFRESH_SECONDS
+                    break
+                if key.lower() == "w":
+                    auto_refresh = not auto_refresh
+                    next_refresh_at = (
+                        time.time() + AUTO_REFRESH_SECONDS if auto_refresh else None
+                    )
+                    _render_tui(
+                        results,
+                        completed=len(accounts),
+                        total=len(accounts),
+                        refreshing=False,
+                        auto_refresh=auto_refresh,
+                        next_refresh_at=next_refresh_at,
+                        last_capture_time=last_capture_time,
+                    )
+
+def _handle_show_usage(store_path: Path, timeout: float, as_json: bool, debug: bool) -> int:
     store = load_store(store_path)
     accounts = store.get("accounts", [])
     if not accounts:
@@ -316,42 +628,27 @@ def _handle_show_usage(store_path: Path, timeout: float, as_json: bool) -> int:
 
     updated = False
     results: list[dict[str, Any]] = []
+    refreshed_accounts: list[dict[str, Any]] = []
 
     for account in accounts:
-        label = account.get("email") or account.get("account_id") or "<unknown>"
-        try:
-            _, was_updated = _ensure_fresh_account_tokens(account, timeout)
-            updated = updated or was_updated
-            usage = fetch_usage(account["access_token"], account.get("account_id"), timeout)
-            results.append(
-                {
-                    "label": label,
-                    "account_id": account.get("account_id"),
-                    "email": account.get("email"),
-                    "status": "ok",
-                    "plan": usage.get("plan"),
-                    "windows": usage.get("windows", []),
-                }
-            )
-        except Exception as exc:
-            results.append(
-                {
-                    "label": label,
-                    "account_id": account.get("account_id"),
-                    "email": account.get("email"),
-                    "status": "error",
-                    "error": str(exc),
-                }
-            )
+        updated_account, result, was_updated = _refresh_single_account(
+            account,
+            timeout=timeout,
+            debug=debug,
+        )
+        refreshed_accounts.append(updated_account)
+        results.append(result)
+        updated = updated or was_updated
 
     if updated:
+        store["accounts"] = refreshed_accounts
         save_store(store_path, store)
 
     if as_json:
         print(json.dumps({"accounts": results}, indent=2))
     else:
         sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
-        print(_format_text_usage(sorted_results))
+        print(_format_text_usage(sorted_results, last_capture_time=_capture_timestamp()))
 
     has_success = any(item["status"] == "ok" for item in results)
     return 0 if has_success else 1
@@ -363,9 +660,35 @@ def main(argv: list[str] | None = None) -> int:
     store_path = Path(os.path.expanduser(args.auth_file)).resolve()
 
     try:
+        if not args.add_account and not args.show_usage and not args.tui:
+            _eprint("Choose one mode: --add-account, --show-usage, or --tui.")
+            return 2
+        if args.add_account and (args.show_usage or args.tui):
+            _eprint("--add-account cannot be combined with --show-usage/--tui.")
+            return 2
+
         if args.add_account:
-            return _handle_add_account(store_path, timeout=float(args.timeout), no_open=args.no_open)
-        return _handle_show_usage(store_path, timeout=float(args.timeout), as_json=args.json)
+            return _handle_add_account(
+                store_path,
+                timeout=float(args.timeout),
+                no_open=args.no_open,
+                debug=args.debug,
+            )
+        if args.tui:
+            if args.json:
+                _eprint("--tui cannot be combined with --json.")
+                return 2
+            return _handle_show_usage_tui(
+                store_path,
+                timeout=float(args.timeout),
+                debug=args.debug,
+            )
+        return _handle_show_usage(
+            store_path,
+            timeout=float(args.timeout),
+            as_json=args.json,
+            debug=args.debug,
+        )
     except KeyboardInterrupt:
         _eprint("Interrupted.")
         return 130

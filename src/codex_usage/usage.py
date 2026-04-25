@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -40,7 +41,16 @@ def _resolve_secondary_window_label(
     return "Day"
 
 
-def fetch_usage(access_token: str, account_id: str | None, timeout: float) -> dict[str, Any]:
+def _debug_dump_raw(debug: bool, label: str, raw_text: str) -> None:
+    if not debug:
+        return
+    print(f"[debug] {label}", file=sys.stderr)
+    print(raw_text, file=sys.stderr)
+
+
+def fetch_usage(
+    access_token: str, account_id: str | None, timeout: float, *, debug: bool = False
+) -> dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": "CodexBar",
@@ -53,8 +63,10 @@ def fetch_usage(access_token: str, account_id: str | None, timeout: float) -> di
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
+            _debug_dump_raw(debug, f"usage response {response.status} {WHAM_USAGE_URL}", raw)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        _debug_dump_raw(debug, f"usage response {exc.code} {WHAM_USAGE_URL}", body)
         raise RuntimeError(f"usage request failed ({exc.code}): {' '.join(body.split())}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"usage request failed: {exc.reason}") from exc
