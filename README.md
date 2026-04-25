@@ -1,61 +1,41 @@
 # codex-usage
 
-`codex-usage` is a small CLI for collecting OpenAI Codex usage statistics across multiple stored accounts.
+`codex-usage` is a Python CLI for tracking OpenAI Codex usage across multiple OAuth-authenticated accounts.
 
-The current implementation stores account credentials in a local `auth.json` file, queries the OpenAI organization usage endpoints for each saved account, and prints a summary table showing current month usage.
-
-## Current status
-
-This is the initial application cut. It supports:
-
-- adding or updating an account with `--add-account`
-- displaying current month usage with `--display-usage`
-
-## Important authentication note
-
-The OpenAI organization usage endpoints used by this tool are administration endpoints.
-
-At the time this version was built, the official OpenAI API docs showed these endpoints as requiring an **Admin API key**. An official OAuth flow for these usage endpoints was not identified in the current docs, so the first implementation uses an interactive credential capture flow instead of true OAuth.
-
-That means:
-
-- `--add-account` prompts for an account name, base API URL, and Admin API key
-- credentials are stored locally in `auth.json`
-- the tool verifies the account by making a live call to the organization costs endpoint
+It supports:
+- adding/re-authenticating accounts with browser-based OAuth
+- showing usage for all known accounts in a colorized table
+- a live TUI mode with threaded refreshes
+- optional raw API debug dumps
 
 ## Requirements
 
-- `uv`
-- Python 3.11 or newer
-- Uses UV and launchable via command-line
-- network access to the OpenAI API when adding accounts or displaying usage
-- an OpenAI Admin API key for each organization/account you want to track
+- Python 3.10+
+- `uv` (recommended for dependency/test workflow)
+- Network access to:
+  - `https://auth.openai.com`
+  - `https://chatgpt.com`
 
-## Project layout
+## Install / Run
 
-- `pyproject.toml` contains the project metadata
-- `codex_usage/cli.py` contains the command-line interface
-- `codex_usage/openai_usage.py` contains the OpenAI API calls and usage aggregation logic
-- `codex_usage/storage.py` reads and writes `auth.json`
-- `auth.json` is created locally after you add accounts
-
-## Running with uv
-
-From the project directory:
-
-```bash
-./codex_usage.py --help
-```
-
-This invocation does not require installing the package first and works cleanly in a restricted environment because it runs the module directly.
-
-## Commands
-
-### Show help
+From the project root:
 
 ```bash
 ./codex-usage.py --help
 ```
+
+Or with `uv`:
+
+```bash
+uv run python -m codex_usage.cli --help
+```
+
+## Commands
+
+The CLI has three modes:
+- `--add-account`
+- `--show-usage`
+- `--tui` (interactive usage mode; no extra mode flag required)
 
 ### Add an account
 
@@ -63,136 +43,124 @@ This invocation does not require installing the package first and works cleanly 
 ./codex-usage.py --add-account
 ```
 
-The command will prompt for:
+Flow:
+1. Generates an OpenAI OAuth URL and opens it in your browser.
+2. You sign in and copy the callback URL/code.
+3. CLI exchanges the code for OAuth tokens.
+4. Account is inserted/updated in local `auth.json`.
 
-- `Account name`: a friendly label used in reports
-- `Base API URL`: default is `https://api.openai.com/v1`
-- `Admin API key`: the OpenAI Admin API key used for organization usage endpoints
+Useful options:
+- `--no-open`: do not auto-open browser
+- `--auth-file <path>`: custom auth store path
+- `--debug`: dump raw OAuth responses to `stderr`
 
-Example interactive flow:
+### Show usage (one-shot)
 
-```text
-Account name: primary-org
-Base API URL [https://api.openai.com/v1]:
-Admin API key:
-Stored account 'primary-org' in auth.json.
+```bash
+./codex-usage.py --show-usage
+```
+
+Output behavior:
+- account refresh calls run in parallel threads
+- table sorted by:
+  1. available percentage descending
+  2. time left ascending
+  3. account label ascending
+- rows are numbered
+- line coloring per account row
+- percentage coloring:
+  - `0%` red
+  - `100%` green
+  - `>= 50%` yellow
+  - `< 50%` orange
+- single `Last capture:` timestamp above the table (when the refresh cycle completed)
+- time-left values are printed as relative durations (`n-days n-hrs n-minutes`) in console output
+
+Useful options:
+- `--json`: machine-readable JSON output
+- `--debug`: dump raw usage/OAuth responses to `stderr`
+- `--timeout <seconds>`: request timeout (default: `20`)
+
+Notes:
+- JSON output keeps raw API-compatible values and does not apply console coloring/relative formatting.
+
+### TUI mode
+
+```bash
+./codex-usage.py --tui
 ```
 
 Behavior:
+- renders full table
+- refreshes all accounts in parallel threads
+- updates display as each account completes
+- `--tui` does not require `--show-usage`
 
-- if the account name is new, it is added to `auth.json`
-- if the account name already exists, it is updated in place
-- the tool verifies the credentials immediately
-- if verification fails, the account is still saved and the error is recorded in `auth.json`
+Keys:
+- `SPACE`: refresh now
+- `w`: toggle auto-refresh every 10 minutes
+- `q`: quit
 
-### Display usage
-
-```bash
-./codex-usage.py --display-usage
-```
-
-This command:
-
-- loads all accounts from `auth.json`
-- queries the OpenAI organization costs endpoint for the current month
-- queries the OpenAI organization completions usage endpoint for the current month
-- aggregates the results
-- prints a table to the terminal
-
-Example output shape:
-
-```text
-Account     | Month Cost | Requests | Input Tokens | Output Tokens | Cached Tokens | Last Verified            | Status
-------------+------------+----------+--------------+---------------+---------------+--------------------------+--------
-primary-org | USD 12.34  | 1,245    | 550,000      | 102,000       | 80,000        | 2026-04-24T22:10:00+00:00 | ok
-```
-
-If there are no configured accounts, the command prints:
-
-```text
-No accounts found. Use --add-account first.
-```
+Notes:
+- `--tui` cannot be combined with `--json`
+- if terminal is not interactive, tool falls back to normal `--show-usage` text output
 
 ## Data storage
 
-### `auth.json`
-
-Accounts are stored in a local `auth.json` file in the project directory.
-
-Example structure:
+By default credentials are stored in local `auth.json`:
 
 ```json
 {
+  "version": 1,
   "accounts": [
     {
-      "name": "primary-org",
-      "admin_api_key": "sk-admin-...",
-      "base_url": "https://api.openai.com/v1",
-      "created_at": "2026-04-24T22:00:00+00:00",
-      "last_verified_at": "2026-04-24T22:05:00+00:00",
-      "last_error": null
+      "account_id": "acct_...",
+      "email": "user@example.com",
+      "display_name": "user@example.com",
+      "subject": "user_...",
+      "access_token": "...",
+      "refresh_token": "...",
+      "expires_at": "2026-04-25T03:00:00Z",
+      "created_at": "2026-04-25T01:00:00Z",
+      "updated_at": "2026-04-25T02:00:00Z"
     }
   ]
 }
 ```
 
-Notes:
+Security notes:
+- file is written with restrictive permissions (`0600`)
+- values are still plaintext tokens on disk
+- treat `auth.json` as a secret
 
-- `auth.json` is listed in `.gitignore`
-- credentials are stored in plaintext locally in the current implementation
-- treat this file as sensitive
+## Debug output
 
-## What the tool currently reports
+When `--debug` is enabled, raw API response bodies are printed to `stderr` for:
+- OAuth token exchange
+- OAuth token refresh
+- usage API requests
 
-For each account, the tool currently shows current-month totals for:
+This can expose sensitive data (including token payloads and account metadata). Use carefully.
 
-- cost from the organization costs endpoint
-- request count from completions usage
-- input tokens
-- output tokens
-- cached input tokens
-- last verification timestamp
-- current status
+## API endpoints used
 
-## Limitations
+OAuth:
+- `https://auth.openai.com/oauth/authorize`
+- `https://auth.openai.com/oauth/token`
 
-- the current implementation is based on Admin API keys, not OAuth
-- it currently aggregates only the completions usage endpoint for token and request metrics
-- it does not yet break usage down by model, project, or API key
-- it does not yet export JSON or CSV reports
-- it does not yet support encrypted local credential storage
+Usage:
+- `https://chatgpt.com/backend-api/wham/usage`
 
-## Troubleshooting
+## Development
 
-### Verification fails during `--add-account`
-
-Possible causes:
-
-- the key is not an Admin API key
-- the base URL is wrong
-- network access to the OpenAI API is blocked
-- the organization does not allow the requested administration endpoint
-
-If verification fails, the tool saves the account and records the most recent error in `auth.json`.
-
-### `uv run` cannot access its default cache directory
-
-In restricted environments, point `uv` at a writable cache directory:
+Run tests:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run python -m codex_usage.cli --help
+uv run --extra dev pytest -q
 ```
 
-### `--display-usage` shows an error status
+Current package version is defined in:
+- `pyproject.toml`
+- `src/codex_usage/__init__.py`
 
-The tool will keep the account in the table and show an error string in the `Status` column if the API call fails.
-
-## Next improvements
-
-Likely next steps for the application:
-
-- replace local plaintext storage with encrypted credential storage
-- add JSON and CSV export modes
-- add model, project, and per-account breakdowns
-- support configurable date windows
-- revisit OAuth if OpenAI exposes a supported auth flow for these endpoints
+For release notes and version-by-version change details, see `HISTORY.md`.

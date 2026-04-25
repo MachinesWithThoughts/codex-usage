@@ -626,19 +626,11 @@ def _handle_show_usage(store_path: Path, timeout: float, as_json: bool, debug: b
         _eprint(f"No accounts found in {store_path}. Add one with --add-account.")
         return 1
 
-    updated = False
-    results: list[dict[str, Any]] = []
-    refreshed_accounts: list[dict[str, Any]] = []
-
-    for account in accounts:
-        updated_account, result, was_updated = _refresh_single_account(
-            account,
-            timeout=timeout,
-            debug=debug,
-        )
-        refreshed_accounts.append(updated_account)
-        results.append(result)
-        updated = updated or was_updated
+    refreshed_accounts, results, updated = _refresh_accounts_threaded(
+        accounts,
+        timeout=timeout,
+        debug=debug,
+    )
 
     if updated:
         store["accounts"] = refreshed_accounts

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
+import codex_usage.cli as cli_module
 from codex_usage.cli import _format_text_usage, _result_sort_key
+from codex_usage.store import load_store, save_store, upsert_account
 
 
 def test_format_text_usage_renders_table_rows() -> None:
@@ -80,3 +84,61 @@ def test_result_sort_key_orders_available_desc_left_asc() -> None:
         "middle@example.com",
         "bottom@example.com",
     ]
+
+
+def test_handle_show_usage_uses_threaded_refresh(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    store_path = tmp_path / "auth.json"
+    store = load_store(store_path)
+    upsert_account(
+        store,
+        account_id="acct_1",
+        email="one@example.com",
+        subject="user_1",
+        access_token="access-1",
+        refresh_token="refresh-1",
+        expires_epoch_seconds=2_000_000_000,
+    )
+    save_store(store_path, store)
+
+    called = {"threaded": False}
+
+    def fake_single(*_args, **_kwargs):
+        raise AssertionError("_refresh_single_account should not be called for --show-usage")
+
+    def fake_threaded(accounts, *, timeout: float, debug: bool, on_update=None):
+        called["threaded"] = True
+        assert len(accounts) == 1
+        assert timeout == 12.0
+        assert debug is True
+        assert on_update is None
+        return (
+            accounts,
+            [
+                {
+                    "label": "one@example.com",
+                    "account_id": "acct_1",
+                    "email": "one@example.com",
+                    "status": "ok",
+                    "plan": "free",
+                    "windows": [],
+                }
+            ],
+            False,
+        )
+
+    monkeypatch.setattr(cli_module, "_refresh_single_account", fake_single)
+    monkeypatch.setattr(cli_module, "_refresh_accounts_threaded", fake_threaded)
+
+    rc = cli_module._handle_show_usage(
+        store_path,
+        timeout=12.0,
+        as_json=True,
+        debug=True,
+    )
+
+    assert rc == 0
+    assert called["threaded"] is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["accounts"][0]["label"] == "one@example.com"
