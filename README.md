@@ -8,6 +8,16 @@ It supports:
 - a live TUI mode with threaded refreshes
 - optional raw API debug dumps
 
+## Screenshots
+
+### `codex usage --show-usage`
+
+![codex-usage --show-usage](./codex-usage--show-usage.png)
+
+### `codex usage --tui`
+
+![codex-usage --tui](./codex-usage--tui.png)
+
 ## Requirements
 
 - Python 3.10+
@@ -52,7 +62,7 @@ Flow:
 Useful options:
 - `--no-open`: do not auto-open browser
 - `--auth-file <path>`: custom auth store path
-- `--json`: save full authentication session output to `./json/YYYYMMDD-HH24MMSS--account.json`
+- `--json`: save full authentication session output to `./json/YYYYMMDD-HH24MMSS--account--auth.json`
 - `--debug`: dump raw OAuth responses to `stderr`
 
 ### Show usage (one-shot)
@@ -83,9 +93,11 @@ Useful options:
 - `--timeout <seconds>`: request timeout (default: `20`)
 
 Notes:
+- With `--json`, one-shot mode writes snapshot files and does not print JSON payloads to `stdout`.
 - JSON output keeps raw API-compatible values and does not apply console coloring/relative formatting.
 - JSON snapshot files include API payload sections for usage, OAuth refresh, and OAuth exchange during `--add-account`.
-- Snapshot files may contain sensitive token-related fields; treat the `json/` directory as secret data.
+- Auth snapshot files use `./json/YYYYMMDD-HH24MMSS--account--auth.json`; if identity is unknown, `account` becomes `unknown`.
+- Snapshot files contain highly sensitive values (authorization codes, access/refresh tokens, account metadata). Do not share or commit these files.
 
 ### TUI mode
 

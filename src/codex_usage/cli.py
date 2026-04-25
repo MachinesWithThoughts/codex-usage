@@ -8,6 +8,7 @@ import queue
 import re
 import select
 import sys
+import tempfile
 import termios
 import threading
 import tty
@@ -32,6 +33,8 @@ from .usage import fetch_usage
 REFRESH_SKEW_SECONDS = 60
 AUTO_REFRESH_SECONDS = 10 * 60
 JSON_OUTPUT_DIR_NAME = "json"
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
@@ -76,7 +79,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Save API output to ./json/*.json (also prints JSON for --show-usage).",
+        help=(
+            "Save API output to ./json "
+            "(usage: YYYYMMDD-HH24MMSS--account.json, auth: YYYYMMDD-HH24MMSS--account--auth.json)."
+        ),
     )
     parser.add_argument("--tui", action="store_true", help="Interactive TUI mode for --show-usage.")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
@@ -426,16 +432,20 @@ def _next_snapshot_path(output_dir: Path, stamp: str, account: str) -> Path:
 def _write_json_auth_snapshot(
     trace: dict[str, Any], output_dir: Path, *, account_hint: str | None = None
 ) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(output_dir)
     stamp = _json_filename_timestamp()
-    account = _safe_account_filename({"email": account_hint or "auth"})
-    path = _next_snapshot_path(output_dir, stamp, account)
-    path.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    account = _safe_account_filename({"email": account_hint or "unknown"})
+    path = output_dir / f"{stamp}--{account}--auth.json"
+    suffix = 2
+    while path.exists():
+        path = output_dir / f"{stamp}--{account}-{suffix}--auth.json"
+        suffix += 1
+    _write_private_json(path, trace)
     return path
 
 
 def _write_json_api_snapshots(results: list[dict[str, Any]], output_dir: Path) -> list[Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(output_dir)
     stamp = _json_filename_timestamp()
     written: list[Path] = []
     for result in results:
@@ -456,9 +466,32 @@ def _write_json_api_snapshots(results: list[dict[str, Any]], output_dir: Path) -
                 "oauth_refresh": result.get("oauth_refresh_raw"),
             },
         }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_private_json(path, payload)
         written.append(path)
     return written
+
+
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, PRIVATE_DIR_MODE)
+    except OSError:
+        pass
+
+
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(tmp_path, PRIVATE_FILE_MODE)
+        os.replace(tmp_path, path)
+        os.chmod(path, PRIVATE_FILE_MODE)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def _refresh_single_account(
@@ -789,14 +822,15 @@ def _handle_show_usage(
         store["accounts"] = refreshed_accounts
         save_store(store_path, store)
 
+    written_paths: list[Path] = []
     if as_json and json_output_dir is not None:
-        _write_json_api_snapshots(results, json_output_dir)
+        written_paths = _write_json_api_snapshots(results, json_output_dir)
 
-    if as_json:
-        print(json.dumps({"accounts": results}, indent=2))
-    else:
+    if not as_json:
         sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
         print(_format_text_usage(sorted_results, last_capture_time=_capture_timestamp()))
+    elif written_paths:
+        _eprint(f"Saved {len(written_paths)} JSON snapshot files to {json_output_dir}.")
 
     has_success = any(item["status"] == "ok" for item in results)
     return 0 if has_success else 1

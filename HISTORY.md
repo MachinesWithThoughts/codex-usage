@@ -6,6 +6,20 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.7 - 2026-04-25
+
+### Added
+- Added MIT license file (`LICENSE`) and package metadata license/classifier declarations.
+- Added README screenshot references for `--show-usage` and `--tui` captures.
+
+### Changed
+- JSON snapshot files are now written with least-privileged permissions (`0600`).
+- Clarified and normalized JSON snapshot filename conventions:
+  - usage snapshots: `YYYYMMDD-HH24MMSS--account.json`
+  - auth snapshots: `YYYYMMDD-HH24MMSS--account--auth.json`
+- `--show-usage --json` no longer prints JSON payloads to `stdout`; snapshots are written to files.
+- README updated with stronger warnings that JSON snapshots may include authorization codes, access tokens, refresh tokens, and account metadata.
+
 ## 0.1.6 - 2026-04-25
 
 ### Added

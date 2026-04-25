@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from pathlib import Path
 
 import codex_usage.cli as cli_module
@@ -142,8 +143,9 @@ def test_handle_show_usage_uses_threaded_refresh(
 
     assert rc == 0
     assert called["threaded"] is True
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["accounts"][0]["label"] == "one@example.com"
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_handle_show_usage_json_writes_per_account_api_snapshots(
@@ -215,6 +217,8 @@ def test_handle_show_usage_json_writes_per_account_api_snapshots(
     second = output_dir / "20260425-031500--two_weird@example.com.json"
     assert first.exists()
     assert second.exists()
+    assert stat.S_IMODE(first.stat().st_mode) == 0o600
+    assert stat.S_IMODE(second.stat().st_mode) == 0o600
 
     payload_one = json.loads(first.read_text(encoding="utf-8"))
     assert payload_one["status"] == "ok"
@@ -224,8 +228,10 @@ def test_handle_show_usage_json_writes_per_account_api_snapshots(
     assert payload_two["status"] == "error"
     assert payload_two["api_output"]["oauth_refresh"] == {"token_type": "bearer"}
 
-    stdout_payload = json.loads(capsys.readouterr().out)
-    assert len(stdout_payload["accounts"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Saved 2 JSON snapshot files to" in captured.err
+    assert str(output_dir) in captured.err
 
 
 def test_main_allows_tui_with_json(monkeypatch, tmp_path: Path) -> None:
@@ -310,8 +316,9 @@ def test_handle_add_account_json_writes_auth_snapshot(monkeypatch, tmp_path: Pat
     )
 
     assert rc == 0
-    snapshot = output_dir / "20260425-131500--one@example.com.json"
+    snapshot = output_dir / "20260425-131500--one@example.com--auth.json"
     assert snapshot.exists()
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
     payload = json.loads(snapshot.read_text(encoding="utf-8"))
     assert payload["status"] == "ok"
     assert payload["oauth_exchange_response"]["token_type"] == "Bearer"
@@ -350,8 +357,9 @@ def test_handle_add_account_json_writes_error_snapshot(monkeypatch, tmp_path: Pa
             json_output_dir=output_dir,
         )
 
-    snapshot = output_dir / "20260425-131501--auth.json"
+    snapshot = output_dir / "20260425-131501--unknown--auth.json"
     assert snapshot.exists()
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
     payload = json.loads(snapshot.read_text(encoding="utf-8"))
     assert payload["status"] == "error"
     assert payload["error"] == "bad callback"
