@@ -31,6 +31,7 @@ from .usage import fetch_usage
 
 REFRESH_SKEW_SECONDS = 60
 AUTO_REFRESH_SECONDS = 10 * 60
+JSON_OUTPUT_DIR_NAME = "json"
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
@@ -44,6 +45,7 @@ LINE_COLORS = [
     "\033[96m",  # bright cyan
 ]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._@-]+")
 
 
 def _eprint(message: str) -> None:
@@ -71,79 +73,132 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-usage", action="store_true", help="Fetch current usage for all stored accounts.")
     parser.add_argument("--auth-file", default="auth.json", help="Path to auth store (default: auth.json).")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds.")
-    parser.add_argument("--json", action="store_true", help="Print --show-usage output as JSON.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Save API output to ./json/*.json (also prints JSON for --show-usage).",
+    )
     parser.add_argument("--tui", action="store_true", help="Interactive TUI mode for --show-usage.")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
     parser.add_argument("--debug", action="store_true", help="Dump raw API response output to stderr.")
     return parser
 
 
-def _handle_add_account(store_path: Path, timeout: float, no_open: bool, debug: bool) -> int:
-    store = load_store(store_path)
-    code_verifier, code_challenge = generate_pkce_pair()
-    state = generate_state()
-    auth_url = build_authorize_url(state, code_challenge)
+def _handle_add_account(
+    store_path: Path,
+    timeout: float,
+    no_open: bool,
+    debug: bool,
+    *,
+    as_json: bool,
+    json_output_dir: Path | None,
+) -> int:
+    trace: dict[str, Any] = {
+        "captured_at": _capture_timestamp(),
+        "mode": "add-account",
+        "status": "started",
+        "store_path": str(store_path),
+    }
 
-    print("Open this URL to authenticate with OpenAI Codex:")
-    print(auth_url)
-    print()
-    print("After completing login, paste the full redirect URL (or the authorization code).")
+    def flush_snapshot(account_hint: str | None = None) -> None:
+        if not as_json or json_output_dir is None:
+            return
+        _write_json_auth_snapshot(trace, json_output_dir, account_hint=account_hint)
 
-    if not no_open:
-        _open_browser(auth_url)
+    try:
+        store = load_store(store_path)
+        code_verifier, code_challenge = generate_pkce_pair()
+        state = generate_state()
+        auth_url = build_authorize_url(state, code_challenge)
+        trace["oauth_request"] = {
+            "state": state,
+            "code_challenge": code_challenge,
+            "auth_url": auth_url,
+        }
 
-    callback_input = input("Callback URL or code: ").strip()
-    code = parse_callback_input(callback_input, state)
-    tokens = exchange_authorization_code(code, code_verifier, timeout=timeout, debug=debug)
+        print("Open this URL to authenticate with OpenAI Codex:")
+        print(auth_url)
+        print()
+        print("After completing login, paste the full redirect URL (or the authorization code).")
 
-    identity = resolve_identity(tokens["access_token"])
-    account_id = identity.get("account_id")
-    email = identity.get("email")
-    subject = identity.get("subject")
+        if not no_open:
+            _open_browser(auth_url)
 
-    existing_record = None
-    for account in store["accounts"]:
-        if account_id and account.get("account_id") == account_id:
-            existing_record = account
-            break
-        if email and account.get("email") == email:
-            existing_record = account
-            break
-        if subject and account.get("subject") == subject:
-            existing_record = account
-            break
+        callback_input = input("Callback URL or code: ").strip()
+        trace["callback_input"] = callback_input
+        code = parse_callback_input(callback_input, state)
+        trace["authorization_code"] = code
+        tokens = exchange_authorization_code(code, code_verifier, timeout=timeout, debug=debug)
+        trace["oauth_exchange_response"] = tokens
 
-    if existing_record is not None:
-        label = existing_record.get("email") or existing_record.get("account_id")
-        if not _confirm(f"Account '{label}' already exists. Re-authenticate? [y/N]: "):
-            print("Cancelled.")
-            return 0
+        identity = resolve_identity(tokens["access_token"])
+        trace["resolved_identity"] = identity
+        account_id = identity.get("account_id")
+        email = identity.get("email")
+        subject = identity.get("subject")
 
-    saved_record, replaced = upsert_account(
-        store,
-        account_id=account_id if isinstance(account_id, str) else None,
-        email=email if isinstance(email, str) else None,
-        subject=subject if isinstance(subject, str) else None,
-        access_token=tokens["access_token"],
-        refresh_token=tokens["refresh_token"],
-        expires_epoch_seconds=int(tokens["expires_epoch_seconds"]),
-    )
-    save_store(store_path, store)
+        existing_record = None
+        for account in store["accounts"]:
+            if account_id and account.get("account_id") == account_id:
+                existing_record = account
+                break
+            if email and account.get("email") == email:
+                existing_record = account
+                break
+            if subject and account.get("subject") == subject:
+                existing_record = account
+                break
 
-    label = saved_record.get("email") or saved_record["account_id"]
-    action = "Re-authenticated" if replaced else "Added"
-    print(f"{action} account: {label}")
-    print(f"Auth store: {store_path}")
-    return 0
+        if existing_record is not None:
+            label = existing_record.get("email") or existing_record.get("account_id")
+            if not _confirm(f"Account '{label}' already exists. Re-authenticate? [y/N]: "):
+                trace["status"] = "cancelled"
+                trace["cancel_reason"] = "User declined re-authentication."
+                flush_snapshot(account_hint=str(label) if label else None)
+                print("Cancelled.")
+                return 0
+
+        saved_record, replaced = upsert_account(
+            store,
+            account_id=account_id if isinstance(account_id, str) else None,
+            email=email if isinstance(email, str) else None,
+            subject=subject if isinstance(subject, str) else None,
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            expires_epoch_seconds=int(tokens["expires_epoch_seconds"]),
+        )
+        save_store(store_path, store)
+
+        label = saved_record.get("email") or saved_record["account_id"]
+        action = "Re-authenticated" if replaced else "Added"
+        trace["status"] = "ok"
+        trace["saved_account"] = saved_record
+        trace["replaced"] = replaced
+        trace["action"] = action
+        flush_snapshot(account_hint=str(label))
+        print(f"{action} account: {label}")
+        print(f"Auth store: {store_path}")
+        return 0
+    except Exception as exc:
+        trace["status"] = "error"
+        trace["error"] = str(exc)
+        account_hint: str | None = None
+        identity = trace.get("resolved_identity")
+        if isinstance(identity, dict):
+            raw_hint = identity.get("email") or identity.get("account_id")
+            if isinstance(raw_hint, str) and raw_hint:
+                account_hint = raw_hint
+        flush_snapshot(account_hint=account_hint)
+        raise
 
 
 def _ensure_fresh_account_tokens(
     account: dict[str, Any], timeout: float, *, debug: bool = False
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool, dict[str, Any] | None]:
     now = int(time.time())
     expires = iso_to_epoch_seconds(account["expires_at"])
     if expires > now + REFRESH_SKEW_SECONDS:
-        return account, False
+        return account, False, None
 
     refreshed = refresh_access_token(account["refresh_token"], timeout=timeout, debug=debug)
     identity = resolve_identity(refreshed["access_token"], fallback_email=account.get("email"))
@@ -167,7 +222,7 @@ def _ensure_fresh_account_tokens(
     if isinstance(identity.get("subject"), str) and identity["subject"]:
         account["subject"] = identity["subject"]
 
-    return account, True
+    return account, True, refreshed
 
 
 def _format_text_usage(
@@ -344,15 +399,82 @@ def _capture_timestamp() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _json_filename_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _safe_account_filename(result: dict[str, Any]) -> str:
+    raw = (
+        str(result.get("email") or "")
+        or str(result.get("label") or "")
+        or str(result.get("account_id") or "")
+        or "unknown"
+    )
+    value = FILENAME_SAFE_RE.sub("_", raw).strip("._-")
+    return value or "unknown"
+
+
+def _next_snapshot_path(output_dir: Path, stamp: str, account: str) -> Path:
+    path = output_dir / f"{stamp}--{account}.json"
+    suffix = 2
+    while path.exists():
+        path = output_dir / f"{stamp}--{account}-{suffix}.json"
+        suffix += 1
+    return path
+
+
+def _write_json_auth_snapshot(
+    trace: dict[str, Any], output_dir: Path, *, account_hint: str | None = None
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _json_filename_timestamp()
+    account = _safe_account_filename({"email": account_hint or "auth"})
+    path = _next_snapshot_path(output_dir, stamp, account)
+    path.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_json_api_snapshots(results: list[dict[str, Any]], output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _json_filename_timestamp()
+    written: list[Path] = []
+    for result in results:
+        account = _safe_account_filename(result)
+        path = _next_snapshot_path(output_dir, stamp, account)
+
+        payload = {
+            "captured_at": result.get("captured_at"),
+            "label": result.get("label"),
+            "email": result.get("email"),
+            "account_id": result.get("account_id"),
+            "status": result.get("status"),
+            "error": result.get("error"),
+            "plan": result.get("plan"),
+            "windows": result.get("windows"),
+            "api_output": {
+                "usage": result.get("usage_raw"),
+                "oauth_refresh": result.get("oauth_refresh_raw"),
+            },
+        }
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written.append(path)
+    return written
+
+
 def _refresh_single_account(
     account: dict[str, Any], *, timeout: float, debug: bool
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     working = dict(account)
     label = working.get("email") or working.get("account_id") or "<unknown>"
     was_updated = False
+    oauth_refresh_raw: dict[str, Any] | None = None
     captured_at = _capture_timestamp()
     try:
-        _, was_updated = _ensure_fresh_account_tokens(working, timeout, debug=debug)
+        _, was_updated, oauth_refresh_raw = _ensure_fresh_account_tokens(
+            working,
+            timeout,
+            debug=debug,
+        )
         usage = fetch_usage(
             working["access_token"],
             working.get("account_id"),
@@ -367,6 +489,8 @@ def _refresh_single_account(
             "captured_at": captured_at,
             "plan": usage.get("plan"),
             "windows": usage.get("windows", []),
+            "usage_raw": usage.get("raw"),
+            "oauth_refresh_raw": oauth_refresh_raw,
         }
     except Exception as exc:
         result = {
@@ -376,6 +500,7 @@ def _refresh_single_account(
             "status": "error",
             "captured_at": captured_at,
             "error": str(exc),
+            "oauth_refresh_raw": oauth_refresh_raw,
         }
     return working, result, was_updated
 
@@ -497,7 +622,14 @@ def _poll_keypress(timeout_seconds: float) -> str | None:
         return None
 
 
-def _handle_show_usage_tui(store_path: Path, timeout: float, debug: bool) -> int:
+def _handle_show_usage_tui(
+    store_path: Path,
+    timeout: float,
+    debug: bool,
+    *,
+    as_json: bool,
+    json_output_dir: Path | None,
+) -> int:
     store = load_store(store_path)
     accounts = store.get("accounts", [])
     if not accounts:
@@ -505,12 +637,24 @@ def _handle_show_usage_tui(store_path: Path, timeout: float, debug: bool) -> int
         return 1
     if not sys.stdout.isatty() or not sys.stdin.isatty():
         _eprint("TUI requires an interactive terminal; falling back to regular --show-usage output.")
-        return _handle_show_usage(store_path, timeout=timeout, as_json=False, debug=debug)
+        return _handle_show_usage(
+            store_path,
+            timeout=timeout,
+            as_json=as_json,
+            debug=debug,
+            json_output_dir=json_output_dir,
+        )
 
     with _raw_stdin() as raw_ok:
         if not raw_ok:
             _eprint("Failed to enable terminal raw mode; falling back to regular --show-usage output.")
-            return _handle_show_usage(store_path, timeout=timeout, as_json=False, debug=debug)
+            return _handle_show_usage(
+                store_path,
+                timeout=timeout,
+                as_json=as_json,
+                debug=debug,
+                json_output_dir=json_output_dir,
+            )
 
         pending_results = []
         for account in accounts:
@@ -564,6 +708,8 @@ def _handle_show_usage_tui(store_path: Path, timeout: float, debug: bool) -> int
                 store["accounts"] = accounts
                 save_store(store_path, store)
             last_capture_time = _capture_timestamp()
+            if as_json and json_output_dir is not None:
+                _write_json_api_snapshots(results, json_output_dir)
             if auto_refresh:
                 next_refresh_at = time.time() + AUTO_REFRESH_SECONDS
 
@@ -619,7 +765,14 @@ def _handle_show_usage_tui(store_path: Path, timeout: float, debug: bool) -> int
                         last_capture_time=last_capture_time,
                     )
 
-def _handle_show_usage(store_path: Path, timeout: float, as_json: bool, debug: bool) -> int:
+def _handle_show_usage(
+    store_path: Path,
+    timeout: float,
+    as_json: bool,
+    debug: bool,
+    *,
+    json_output_dir: Path | None,
+) -> int:
     store = load_store(store_path)
     accounts = store.get("accounts", [])
     if not accounts:
@@ -636,6 +789,9 @@ def _handle_show_usage(store_path: Path, timeout: float, as_json: bool, debug: b
         store["accounts"] = refreshed_accounts
         save_store(store_path, store)
 
+    if as_json and json_output_dir is not None:
+        _write_json_api_snapshots(results, json_output_dir)
+
     if as_json:
         print(json.dumps({"accounts": results}, indent=2))
     else:
@@ -650,6 +806,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     store_path = Path(os.path.expanduser(args.auth_file)).resolve()
+    json_output_dir = Path(JSON_OUTPUT_DIR_NAME) if args.json else None
 
     try:
         if not args.add_account and not args.show_usage and not args.tui:
@@ -665,21 +822,23 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=float(args.timeout),
                 no_open=args.no_open,
                 debug=args.debug,
+                as_json=args.json,
+                json_output_dir=json_output_dir,
             )
         if args.tui:
-            if args.json:
-                _eprint("--tui cannot be combined with --json.")
-                return 2
             return _handle_show_usage_tui(
                 store_path,
                 timeout=float(args.timeout),
                 debug=args.debug,
+                as_json=args.json,
+                json_output_dir=json_output_dir,
             )
         return _handle_show_usage(
             store_path,
             timeout=float(args.timeout),
             as_json=args.json,
             debug=args.debug,
+            json_output_dir=json_output_dir,
         )
     except KeyboardInterrupt:
         _eprint("Interrupted.")

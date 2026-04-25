@@ -6,6 +6,18 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.6 - 2026-04-25
+
+### Added
+- When `--json` is enabled, per-account API snapshots are saved to `json/YYYYMMDD-HH24MMSS--account.json`.
+- Added tests for JSON snapshot file creation and `--tui --json` argument support.
+- Added authentication snapshot capture for `--add-account --json`, including OAuth exchange output and error/cancel traces.
+
+### Changed
+- Enabled `--json` in TUI mode; snapshot files are written on each completed TUI refresh cycle.
+- Extended per-account refresh results to include raw usage/OAuth refresh payload sections for JSON snapshots.
+- JSON snapshot output directory is `./json` (current working directory).
+
 ## 0.1.5 - 2026-04-25
 
 ### Added
