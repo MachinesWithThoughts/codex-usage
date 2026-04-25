@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from codex_usage.cli import _format_text_usage
+from codex_usage.cli import _format_text_usage, _result_sort_key
 
 
 def test_format_text_usage_renders_table_rows() -> None:
@@ -46,3 +46,37 @@ def test_format_text_usage_renders_table_rows() -> None:
     assert "\x1b[33m50.0%\x1b[0m" in output
     assert "\x1b[32m100.0%\x1b[0m" in output
     assert output.count("\n") >= 5
+
+
+def test_result_sort_key_orders_available_desc_left_asc() -> None:
+    now_ms = 1_700_000_000_000
+    results = [
+        {
+            "label": "bottom@example.com",
+            "status": "ok",
+            "windows": [{"used_percent": 100.0, "reset_at_ms": now_ms + 10 * 60_000}],  # 0% available
+        },
+        {
+            "label": "later@example.com",
+            "status": "ok",
+            "windows": [{"used_percent": 0.0, "reset_at_ms": now_ms + 8 * 60_000}],  # 100% available, later
+        },
+        {
+            "label": "sooner@example.com",
+            "status": "ok",
+            "windows": [{"used_percent": 0.0, "reset_at_ms": now_ms + 5 * 60_000}],  # 100% available, sooner
+        },
+        {
+            "label": "middle@example.com",
+            "status": "ok",
+            "windows": [{"used_percent": 30.0, "reset_at_ms": now_ms + 1 * 60_000}],  # 70% available
+        },
+    ]
+
+    sorted_results = sorted(results, key=lambda item: _result_sort_key(item, now_ms=now_ms))
+    assert [item["label"] for item in sorted_results] == [
+        "sooner@example.com",
+        "later@example.com",
+        "middle@example.com",
+        "bottom@example.com",
+    ]

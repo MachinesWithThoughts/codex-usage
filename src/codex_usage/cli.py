@@ -235,6 +235,13 @@ def _format_relative_reset(reset_at_ms: Any, *, now_ms: int | None = None) -> st
     return f"{days}-days {hours}-hrs {minutes}-minutes"
 
 
+def _resolve_left_ms(reset_at_ms: Any, *, now_ms: int | None = None) -> int:
+    if not isinstance(reset_at_ms, int) or reset_at_ms <= 0:
+        return 2**62
+    current_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    return max(0, reset_at_ms - current_ms)
+
+
 def _resolve_available_percent(window: dict[str, Any]) -> float:
     raw = window.get("used_percent")
     used = 0.0
@@ -251,6 +258,25 @@ def _resolve_available_percent(window: dict[str, Any]) -> float:
     if available > 100:
         return 100.0
     return available
+
+
+def _result_sort_key(result: dict[str, Any], *, now_ms: int | None = None) -> tuple[Any, ...]:
+    status = str(result.get("status") or "")
+    if status != "ok":
+        label = str(result.get("label") or "")
+        return (1, 1_000.0, 2**62, label)
+
+    windows = result.get("windows") or []
+    if isinstance(windows, list) and windows:
+        first_window = windows[0]
+        if isinstance(first_window, dict):
+            available = _resolve_available_percent(first_window)
+            left_ms = _resolve_left_ms(first_window.get("reset_at_ms"), now_ms=now_ms)
+            label = str(result.get("label") or "")
+            return (0, -available, left_ms, label)
+
+    label = str(result.get("label") or "")
+    return (0, 1_000.0, 2**62, label)
 
 
 def _colorize_percent(value: float, *, continue_color: str = "") -> str:
@@ -324,7 +350,8 @@ def _handle_show_usage(store_path: Path, timeout: float, as_json: bool) -> int:
     if as_json:
         print(json.dumps({"accounts": results}, indent=2))
     else:
-        print(_format_text_usage(results))
+        sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
+        print(_format_text_usage(sorted_results))
 
     has_success = any(item["status"] == "ok" for item in results)
     return 0 if has_success else 1
