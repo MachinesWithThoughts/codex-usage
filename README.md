@@ -8,37 +8,18 @@ It supports:
 - a live TUI mode with threaded refreshes
 - optional raw API debug dumps
 
-## Screenshots
-
-### `codex usage --show-usage`
-
-![codex-usage --show-usage](./codex-usage--show-usage.png)
-
-### `codex usage --tui`
-
-![codex-usage --tui](./codex-usage--tui.png)
 
 ## Requirements
 
 - Python 3.10+
-- `uv` (recommended for dependency/test workflow)
-- Network access to:
-  - `https://auth.openai.com`
-  - `https://chatgpt.com`
 
 ## Install / Run
 
-From the project root:
 
 ```bash
 ./codex-usage.py --help
 ```
 
-Or with `uv`:
-
-```bash
-uv run python -m codex_usage.cli --help
-```
 
 ## Commands
 
@@ -70,6 +51,8 @@ Useful options:
 ```bash
 ./codex-usage.py --show-usage
 ```
+
+![codex-usage --show-usage](./codex-usage--show-usage.png)
 
 Output behavior:
 - account refresh calls run in parallel threads
@@ -104,6 +87,8 @@ Notes:
 ```bash
 ./codex-usage.py --tui
 ```
+
+![codex-usage --tui](./codex-usage--tui.png)
 
 Behavior:
 - renders full table
