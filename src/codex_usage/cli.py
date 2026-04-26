@@ -18,6 +18,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
+from . import __version__
 from .oauth import (
     build_authorize_url,
     exchange_authorization_code,
@@ -71,6 +72,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-usage.py",
         description="OpenClaw-aligned Codex OAuth account manager and usage viewer.",
+        epilog=f"Version: {__version__}",
     )
     parser.add_argument("--add-account", action="store_true", help="Authenticate or re-authenticate an account.")
     parser.add_argument("--show-usage", action="store_true", help="Fetch current usage for all stored accounts.")
@@ -94,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tui", action="store_true", help="Interactive TUI mode for --show-usage.")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
     parser.add_argument("--debug", action="store_true", help="Dump raw API response output to stderr.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 

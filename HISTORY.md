@@ -6,6 +6,15 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.11 - 2026-04-26
+
+### Added
+- `--help` output now includes the application version string.
+- Added `--version` CLI flag for explicit version output.
+
+### Changed
+- Updated parser wiring so help/version information is sourced from package version metadata.
+
 ## 0.1.10 - 2026-04-26
 
 ### Added
