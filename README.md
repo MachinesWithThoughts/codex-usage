@@ -42,7 +42,7 @@ Flow:
 
 Useful options:
 - `--no-open`: do not auto-open browser
-- `--auth-file <path>`: custom auth store path
+- `--auth-file <path>`: custom auth store path (default lookup: `./auth.json`, otherwise `~/.config/codex-usage/auth.json`)
 - `--json`: save full authentication session output to `./json/YYYYMMDD-HH24MMSS--account--auth.json`
 - `--debug`: dump raw OAuth responses to `stderr`
 
@@ -107,7 +107,11 @@ Notes:
 
 ## Data storage
 
-By default credentials are stored in local `auth.json`:
+By default credentials are stored in:
+- `./auth.json` if present
+- otherwise `~/.config/codex-usage/auth.json`
+
+Example structure:
 
 ```json
 {
@@ -131,7 +135,7 @@ By default credentials are stored in local `auth.json`:
 Security notes:
 - file is written with restrictive permissions (`0600`)
 - values are still plaintext tokens on disk
-- treat `auth.json` as a secret
+- treat your auth store file as a secret
 
 ## Debug output
 

@@ -6,6 +6,18 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.8 - 2026-04-26
+
+### Added
+- Added default auth store path fallback logic:
+  - use `./auth.json` when present
+  - otherwise use `~/.config/codex-usage/auth.json`
+- Added tests for auth store path resolution order.
+
+### Changed
+- Updated CLI `--auth-file` help text to describe default lookup behavior.
+- Updated README auth storage docs and examples to match the new default fallback location.
+
 ## 0.1.7 - 2026-04-25
 
 ### Added

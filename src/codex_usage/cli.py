@@ -74,7 +74,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--add-account", action="store_true", help="Authenticate or re-authenticate an account.")
     parser.add_argument("--show-usage", action="store_true", help="Fetch current usage for all stored accounts.")
-    parser.add_argument("--auth-file", default="auth.json", help="Path to auth store (default: auth.json).")
+    parser.add_argument(
+        "--auth-file",
+        default="auth.json",
+        help=(
+            "Path to auth store. Default lookup: ./auth.json, "
+            "otherwise ~/.config/codex-usage/auth.json."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds.")
     parser.add_argument(
         "--json",
@@ -88,6 +95,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
     parser.add_argument("--debug", action="store_true", help="Dump raw API response output to stderr.")
     return parser
+
+
+def _resolve_store_path(auth_file: str) -> Path:
+    # Backward-compatible default lookup: prefer ./auth.json, then ~/.config/codex-usage/auth.json.
+    if auth_file.strip() == "auth.json":
+        cwd_candidate = (Path.cwd() / "auth.json").resolve()
+        if cwd_candidate.exists():
+            return cwd_candidate
+        config_candidate = (
+            Path(os.path.expanduser("~")) / ".config" / "codex-usage" / "auth.json"
+        ).resolve()
+        return config_candidate
+    return Path(os.path.expanduser(auth_file)).resolve()
 
 
 def _handle_add_account(
@@ -839,7 +859,7 @@ def _handle_show_usage(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    store_path = Path(os.path.expanduser(args.auth_file)).resolve()
+    store_path = _resolve_store_path(args.auth_file)
     json_output_dir = Path(JSON_OUTPUT_DIR_NAME) if args.json else None
 
     try:

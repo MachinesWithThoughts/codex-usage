@@ -409,3 +409,46 @@ def test_main_passes_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> Non
     assert called["debug"] is True
     assert called["as_json"] is True
     assert called["json_output_dir"] == Path("json")
+
+
+def test_resolve_store_path_prefers_cwd_auth_json(monkeypatch, tmp_path: Path) -> None:
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+    cwd.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    (cwd / "auth.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.chdir(cwd)
+
+    original_expanduser = cli_module.os.path.expanduser
+
+    def fake_expanduser(value: str) -> str:
+        if value == "~":
+            return str(home)
+        return original_expanduser(value)
+
+    monkeypatch.setattr(cli_module.os.path, "expanduser", fake_expanduser)
+
+    resolved = cli_module._resolve_store_path("auth.json")
+    assert resolved == (cwd / "auth.json").resolve()
+
+
+def test_resolve_store_path_falls_back_to_home_config(monkeypatch, tmp_path: Path) -> None:
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+    cwd.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(cwd)
+
+    original_expanduser = cli_module.os.path.expanduser
+
+    def fake_expanduser(value: str) -> str:
+        if value == "~":
+            return str(home)
+        return original_expanduser(value)
+
+    monkeypatch.setattr(cli_module.os.path, "expanduser", fake_expanduser)
+
+    resolved = cli_module._resolve_store_path("auth.json")
+    expected = (home / ".config" / "codex-usage" / "auth.json").resolve()
+    assert resolved == expected
