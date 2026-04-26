@@ -6,6 +6,15 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.9 - 2026-04-26
+
+### Added
+- Added default CLI behavior so running with no parameters assumes `--show-usage`.
+- Added test coverage for no-argument default mode routing.
+
+### Changed
+- Updated README command usage docs to describe no-parameter default behavior.
+
 ## 0.1.8 - 2026-04-26
 
 ### Added

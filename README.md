@@ -28,6 +28,8 @@ The CLI has three modes:
 - `--show-usage`
 - `--tui` (interactive usage mode; no extra mode flag required)
 
+If you run `./codex-usage.py` with no parameters, it defaults to `--show-usage`.
+
 ### Add an account
 
 ```bash

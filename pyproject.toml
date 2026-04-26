@@ -1,6 +1,6 @@
 [project]
 name = "codex-usage"
-version = "0.1.8"
+version = "0.1.9"
 description = "OpenClaw-aligned Codex OAuth account manager and usage viewer"
 readme = "README.md"
 license = {text = "MIT"}

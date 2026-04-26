@@ -452,3 +452,30 @@ def test_resolve_store_path_falls_back_to_home_config(monkeypatch, tmp_path: Pat
     resolved = cli_module._resolve_store_path("auth.json")
     expected = (home / ".config" / "codex-usage" / "auth.json").resolve()
     assert resolved == expected
+
+
+def test_main_defaults_to_show_usage_when_no_args(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_show_usage(
+        store_path,
+        timeout: float,
+        as_json: bool,
+        debug: bool,
+        *,
+        json_output_dir,
+    ):
+        called["store_path"] = store_path
+        called["timeout"] = timeout
+        called["as_json"] = as_json
+        called["debug"] = debug
+        called["json_output_dir"] = json_output_dir
+        return 0
+
+    monkeypatch.setattr(cli_module, "_handle_show_usage", fake_show_usage)
+    rc = cli_module.main([])
+
+    assert rc == 0
+    assert called["as_json"] is False
+    assert called["debug"] is False
+    assert called["timeout"] == 20.0

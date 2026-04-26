@@ -857,12 +857,15 @@ def _handle_show_usage(
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
     store_path = _resolve_store_path(args.auth_file)
     json_output_dir = Path(JSON_OUTPUT_DIR_NAME) if args.json else None
 
     try:
+        if not argv_list:
+            args.show_usage = True
         if not args.add_account and not args.show_usage and not args.tui:
             _eprint("Choose one mode: --add-account, --show-usage, or --tui.")
             return 2
