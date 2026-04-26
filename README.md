@@ -83,6 +83,7 @@ Notes:
 - JSON snapshot files include API payload sections for usage, OAuth refresh, and OAuth exchange during `--add-account`.
 - Auth snapshot files use `./json/YYYYMMDD-HH24MMSS--account--auth.json`; if identity is unknown, `account` becomes `unknown`.
 - Snapshot files contain highly sensitive values (authorization codes, access/refresh tokens, account metadata). Do not share or commit these files.
+- HTTPS certificate verification uses a CA bundle from `CODEX_USAGE_CA_BUNDLE`, then `SSL_CERT_FILE`, then `certifi` if available.
 
 ### TUI mode
 
@@ -156,6 +157,13 @@ OAuth:
 
 Usage:
 - `https://chatgpt.com/backend-api/wham/usage`
+
+## TLS Troubleshooting
+
+If you see `CERTIFICATE_VERIFY_FAILED`:
+- set `CODEX_USAGE_CA_BUNDLE=/path/to/your/ca-bundle.pem` and rerun
+- or set `SSL_CERT_FILE=/path/to/your/ca-bundle.pem`
+- if neither is set, the CLI falls back to the `certifi` CA bundle
 
 ## Development
 

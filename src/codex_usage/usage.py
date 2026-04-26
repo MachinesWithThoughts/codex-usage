@@ -7,6 +7,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from .net import build_ssl_context
+
 WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 WEEKLY_RESET_GAP_SECONDS = 3 * 24 * 60 * 60
 
@@ -51,6 +53,7 @@ def _debug_dump_raw(debug: bool, label: str, raw_text: str) -> None:
 def fetch_usage(
     access_token: str, account_id: str | None, timeout: float, *, debug: bool = False
 ) -> dict[str, Any]:
+    context = build_ssl_context()
     headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": "CodexBar",
@@ -61,7 +64,7 @@ def fetch_usage(
 
     req = urllib.request.Request(WHAM_USAGE_URL, method="GET", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as response:
             raw = response.read().decode("utf-8")
             _debug_dump_raw(debug, f"usage response {response.status} {WHAM_USAGE_URL}", raw)
     except urllib.error.HTTPError as exc:

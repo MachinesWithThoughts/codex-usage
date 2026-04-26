@@ -12,6 +12,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from .net import build_ssl_context
+
 OPENAI_AUTH_BASE_URL = "https://auth.openai.com"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_REDIRECT_URI = "http://localhost:1455/auth/callback"
@@ -99,6 +101,7 @@ def _debug_dump_raw(debug: bool, label: str, raw_text: str) -> None:
 
 def post_form(url: str, body: dict[str, str], timeout: float, *, debug: bool = False) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(body).encode("utf-8")
+    context = build_ssl_context()
     req = urllib.request.Request(
         url,
         method="POST",
@@ -106,7 +109,7 @@ def post_form(url: str, body: dict[str, str], timeout: float, *, debug: bool = F
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw_text = resp.read().decode("utf-8")
             _debug_dump_raw(debug, f"oauth response {resp.status} {url}", raw_text)
             return parse_json_object(raw_text)

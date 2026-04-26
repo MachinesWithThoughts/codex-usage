@@ -6,6 +6,18 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.10 - 2026-04-26
+
+### Added
+- Added CA bundle resolution for HTTPS requests with precedence:
+  1. `CODEX_USAGE_CA_BUNDLE`
+  2. `SSL_CERT_FILE`
+  3. `certifi` bundle fallback
+- Added tests for SSL context CA bundle selection and validation behavior.
+
+### Changed
+- OAuth and usage HTTP requests now use the resolved SSL context consistently.
+
 ## 0.1.9 - 2026-04-26
 
 ### Added
