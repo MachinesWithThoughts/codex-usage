@@ -54,6 +54,31 @@ def test_format_text_usage_renders_table_rows() -> None:
     assert output.count("\n") >= 5
 
 
+def test_format_text_usage_hides_error_column_when_no_errors() -> None:
+    now_ms = 1_700_000_000_000
+    output = _format_text_usage(
+        [
+            {
+                "label": "one@example.com",
+                "status": "ok",
+                "plan": "free",
+                "windows": [{"label": "168h", "used_percent": 25.0, "reset_at_ms": now_ms + 60_000}],
+            },
+            {
+                "label": "two@example.com",
+                "status": "pending",
+            },
+        ],
+        now_ms=now_ms,
+    )
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    assert "Error" not in plain
+    assert "| # | Account" in plain
+    assert "| 1 | one@example.com | ok" in plain
+    assert "| 2 | two@example.com | pending" in plain
+
+
 def test_result_sort_key_orders_available_desc_left_asc() -> None:
     now_ms = 1_700_000_000_000
     results = [
@@ -136,7 +161,8 @@ def test_handle_show_usage_uses_threaded_refresh(
     rc = cli_module._handle_show_usage(
         store_path,
         timeout=12.0,
-        as_json=True,
+        dump_json=False,
+        print_json=True,
         debug=True,
         json_output_dir=None,
     )
@@ -144,7 +170,9 @@ def test_handle_show_usage_uses_threaded_refresh(
     assert rc == 0
     assert called["threaded"] is True
     captured = capsys.readouterr()
-    assert captured.out == ""
+    payload = json.loads(captured.out)
+    assert payload["rows"][0]["account"] == "one@example.com"
+    assert payload["rows"][0]["status"] == "ok"
     assert captured.err == ""
 
 
@@ -207,7 +235,8 @@ def test_handle_show_usage_json_writes_per_account_api_snapshots(
     rc = cli_module._handle_show_usage(
         store_path,
         timeout=5.0,
-        as_json=True,
+        dump_json=True,
+        print_json=False,
         debug=False,
         json_output_dir=output_dir,
     )
@@ -229,20 +258,23 @@ def test_handle_show_usage_json_writes_per_account_api_snapshots(
     assert payload_two["api_output"]["oauth_refresh"] == {"token_type": "bearer"}
 
     captured = capsys.readouterr()
-    assert captured.out == ""
+    assert "one@example.com" in captured.out
     assert "Saved 2 JSON snapshot files to" in captured.err
     assert str(output_dir) in captured.err
 
 
-def test_main_allows_tui_with_json(monkeypatch, tmp_path: Path) -> None:
+def test_main_allows_tui_with_dump_json(monkeypatch, tmp_path: Path) -> None:
     auth_path = tmp_path / "auth.json"
     called: dict[str, object] = {}
 
-    def fake_tui(store_path, timeout: float, debug: bool, *, as_json: bool, json_output_dir):
+    def fake_tui(
+        store_path, timeout: float, debug: bool, *, dump_json: bool, print_json: bool, json_output_dir
+    ):
         called["store_path"] = store_path
         called["timeout"] = timeout
         called["debug"] = debug
-        called["as_json"] = as_json
+        called["dump_json"] = dump_json
+        called["print_json"] = print_json
         called["json_output_dir"] = json_output_dir
         return 0
 
@@ -251,7 +283,7 @@ def test_main_allows_tui_with_json(monkeypatch, tmp_path: Path) -> None:
     rc = cli_module.main(
         [
             "--tui",
-            "--json",
+            "--dump-json",
             "--auth-file",
             str(auth_path),
             "--timeout",
@@ -264,9 +296,10 @@ def test_main_allows_tui_with_json(monkeypatch, tmp_path: Path) -> None:
     assert called["store_path"] == auth_path.resolve()
     assert called["timeout"] == 9.0
     assert called["debug"] is True
-    assert called["as_json"] is True
+    assert called["dump_json"] is True
+    assert called["print_json"] is False
     assert isinstance(called["json_output_dir"], Path)
-    assert called["json_output_dir"] == Path("json")
+    assert called["json_output_dir"] == Path("codex-usage-dump")
 
 
 def test_handle_add_account_json_writes_auth_snapshot(monkeypatch, tmp_path: Path) -> None:
@@ -311,7 +344,7 @@ def test_handle_add_account_json_writes_auth_snapshot(monkeypatch, tmp_path: Pat
         timeout=10.0,
         no_open=True,
         debug=False,
-        as_json=True,
+        dump_json=True,
         json_output_dir=output_dir,
     )
 
@@ -353,7 +386,7 @@ def test_handle_add_account_json_writes_error_snapshot(monkeypatch, tmp_path: Pa
             timeout=10.0,
             no_open=True,
             debug=False,
-            as_json=True,
+            dump_json=True,
             json_output_dir=output_dir,
         )
 
@@ -366,7 +399,7 @@ def test_handle_add_account_json_writes_error_snapshot(monkeypatch, tmp_path: Pa
     assert payload["callback_input"] == "not-a-valid-callback"
 
 
-def test_main_passes_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> None:
+def test_main_passes_dump_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> None:
     auth_path = tmp_path / "nested" / "auth.json"
     called: dict[str, object] = {}
 
@@ -376,14 +409,14 @@ def test_main_passes_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> Non
         no_open: bool,
         debug: bool,
         *,
-        as_json: bool,
+        dump_json: bool,
         json_output_dir,
     ):
         called["store_path"] = store_path
         called["timeout"] = timeout
         called["no_open"] = no_open
         called["debug"] = debug
-        called["as_json"] = as_json
+        called["dump_json"] = dump_json
         called["json_output_dir"] = json_output_dir
         return 0
 
@@ -392,7 +425,7 @@ def test_main_passes_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> Non
     rc = cli_module.main(
         [
             "--add-account",
-            "--json",
+            "--dump-json",
             "--auth-file",
             str(auth_path),
             "--timeout",
@@ -407,8 +440,8 @@ def test_main_passes_json_dir_to_add_account(monkeypatch, tmp_path: Path) -> Non
     assert called["timeout"] == 7.0
     assert called["no_open"] is True
     assert called["debug"] is True
-    assert called["as_json"] is True
-    assert called["json_output_dir"] == Path("json")
+    assert called["dump_json"] is True
+    assert called["json_output_dir"] == Path("codex-usage-dump")
 
 
 def test_resolve_store_path_prefers_cwd_auth_json(monkeypatch, tmp_path: Path) -> None:
@@ -460,14 +493,16 @@ def test_main_defaults_to_show_usage_when_no_args(monkeypatch) -> None:
     def fake_show_usage(
         store_path,
         timeout: float,
-        as_json: bool,
+        dump_json: bool,
+        print_json: bool,
         debug: bool,
         *,
         json_output_dir,
     ):
         called["store_path"] = store_path
         called["timeout"] = timeout
-        called["as_json"] = as_json
+        called["dump_json"] = dump_json
+        called["print_json"] = print_json
         called["debug"] = debug
         called["json_output_dir"] = json_output_dir
         return 0
@@ -476,6 +511,48 @@ def test_main_defaults_to_show_usage_when_no_args(monkeypatch) -> None:
     rc = cli_module.main([])
 
     assert rc == 0
-    assert called["as_json"] is False
+    assert called["dump_json"] is False
+    assert called["print_json"] is False
     assert called["debug"] is False
     assert called["timeout"] == 20.0
+
+
+def test_main_passes_json_stdout_mode_to_show_usage(monkeypatch, tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    called: dict[str, object] = {}
+
+    def fake_show_usage(
+        store_path,
+        timeout: float,
+        dump_json: bool,
+        print_json: bool,
+        debug: bool,
+        *,
+        json_output_dir,
+    ):
+        called["store_path"] = store_path
+        called["timeout"] = timeout
+        called["dump_json"] = dump_json
+        called["print_json"] = print_json
+        called["debug"] = debug
+        called["json_output_dir"] = json_output_dir
+        return 0
+
+    monkeypatch.setattr(cli_module, "_handle_show_usage", fake_show_usage)
+
+    rc = cli_module.main(
+        [
+            "--show-usage",
+            "--json",
+            "--auth-file",
+            str(auth_path),
+        ]
+    )
+
+    assert rc == 0
+    assert called["store_path"] == auth_path.resolve()
+    assert called["timeout"] == 20.0
+    assert called["dump_json"] is False
+    assert called["print_json"] is True
+    assert called["debug"] is False
+    assert called["json_output_dir"] is None

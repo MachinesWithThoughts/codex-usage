@@ -45,7 +45,7 @@ Flow:
 Useful options:
 - `--no-open`: do not auto-open browser
 - `--auth-file <path>`: custom auth store path (default lookup: `./auth.json`, otherwise `~/.config/codex-usage/auth.json`)
-- `--json`: save full authentication session output to `./json/YYYYMMDD-HH24MMSS--account--auth.json`
+- `--dump-json`: save full authentication session output to `./codex-usage-dump/YYYYMMDD-HH24MMSS--account--auth.json`
 - `--debug`: dump raw OAuth responses to `stderr`
 
 ### Show usage (one-shot)
@@ -73,15 +73,16 @@ Output behavior:
 - time-left values are printed as relative durations (`n-days n-hrs n-minutes`) in console output
 
 Useful options:
-- `--json`: prints machine-readable output and saves per-account API snapshots to `./json/YYYYMMDD-HH24MMSS--account.json`
+- `--json`: print usage table data as machine-readable JSON to `stdout`
+- `--dump-json`: save per-account API snapshots to `./codex-usage-dump/YYYYMMDD-HH24MMSS--account.json`
 - `--debug`: dump raw usage/OAuth responses to `stderr`
 - `--timeout <seconds>`: request timeout (default: `20`)
 
 Notes:
-- With `--json`, one-shot mode writes snapshot files and does not print JSON payloads to `stdout`.
+- `--json` and `--dump-json` can be combined (print JSON to `stdout` and write snapshot files).
 - JSON output keeps raw API-compatible values and does not apply console coloring/relative formatting.
 - JSON snapshot files include API payload sections for usage, OAuth refresh, and OAuth exchange during `--add-account`.
-- Auth snapshot files use `./json/YYYYMMDD-HH24MMSS--account--auth.json`; if identity is unknown, `account` becomes `unknown`.
+- Auth snapshot files use `./codex-usage-dump/YYYYMMDD-HH24MMSS--account--auth.json`; if identity is unknown, `account` becomes `unknown`.
 - Snapshot files contain highly sensitive values (authorization codes, access/refresh tokens, account metadata). Do not share or commit these files.
 - HTTPS certificate verification uses a CA bundle from `CODEX_USAGE_CA_BUNDLE`, then `SSL_CERT_FILE`, then `certifi` if available.
 
@@ -105,7 +106,8 @@ Keys:
 - `q`: quit
 
 Notes:
-- `--json` can be combined with TUI and will write snapshot files for each refresh cycle
+- `--dump-json` can be combined with TUI and will write snapshot files for each refresh cycle
+- `--json` is ignored in interactive TUI mode
 - if terminal is not interactive, tool falls back to normal `--show-usage` text output
 
 ## Data storage

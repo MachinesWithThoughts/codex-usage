@@ -6,6 +6,18 @@ All notable changes to `codex-usage` are documented in this file.
 
 No unreleased changes yet.
 
+## 0.1.12 - 2026-04-26
+
+### Added
+- Added `--dump-json` for writing per-account/auth API snapshots to `./codex-usage-dump`.
+- Added `--json` output mode for `--show-usage` that prints usage table data as JSON to `stdout`.
+- Added coverage to ensure the text table hides the `Error` column when there are no error rows.
+
+### Changed
+- Renamed snapshot output directory from `./json` to `./codex-usage-dump`.
+- In interactive `--tui` mode, `--json` is now ignored while `--dump-json` continues to write snapshots.
+- Updated text table rendering to omit the `Error` column unless at least one account has an error.
+
 ## 0.1.11 - 2026-04-26
 
 ### Added

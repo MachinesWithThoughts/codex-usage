@@ -33,7 +33,7 @@ from .usage import fetch_usage
 
 REFRESH_SKEW_SECONDS = 60
 AUTO_REFRESH_SECONDS = 10 * 60
-JSON_OUTPUT_DIR_NAME = "json"
+JSON_OUTPUT_DIR_NAME = "codex-usage-dump"
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 ANSI_RESET = "\033[0m"
@@ -86,12 +86,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds.")
     parser.add_argument(
-        "--json",
+        "--dump-json",
         action="store_true",
         help=(
-            "Save API output to ./json "
+            "Save API output to ./codex-usage-dump "
             "(usage: YYYYMMDD-HH24MMSS--account.json, auth: YYYYMMDD-HH24MMSS--account--auth.json)."
         ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print usage table data as JSON to stdout.",
     )
     parser.add_argument("--tui", action="store_true", help="Interactive TUI mode for --show-usage.")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open the auth URL in browser.")
@@ -119,7 +124,7 @@ def _handle_add_account(
     no_open: bool,
     debug: bool,
     *,
-    as_json: bool,
+    dump_json: bool,
     json_output_dir: Path | None,
 ) -> int:
     trace: dict[str, Any] = {
@@ -130,7 +135,7 @@ def _handle_add_account(
     }
 
     def flush_snapshot(account_hint: str | None = None) -> None:
-        if not as_json or json_output_dir is None:
+        if not dump_json or json_output_dir is None:
             return
         _write_json_auth_snapshot(trace, json_output_dir, account_hint=account_hint)
 
@@ -260,35 +265,38 @@ def _format_text_usage(
     now_ms: int | None = None,
     last_capture_time: str | None = None,
 ) -> str:
-    headers = ["#", "Account", "Status", "Plan", "Windows", "Error"]
+    has_errors = any(str(result.get("status") or "") not in {"ok", "pending"} for result in results)
+    headers = ["#", "Account", "Status", "Plan", "Windows"]
+    if has_errors:
+        headers.append("Error")
     rows: list[list[str]] = []
     for index, result in enumerate(results, start=1):
         line_color = LINE_COLORS[(index - 1) % len(LINE_COLORS)]
         status = str(result.get("status") or "")
         if status == "pending":
-            rows.append(
-                [
-                    _color_line_cell(str(index), line_color),
-                    _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
-                    _color_line_cell("pending", line_color),
-                    _color_line_cell("-", line_color),
-                    _color_line_cell("refreshing...", line_color),
-                    _color_line_cell("-", line_color),
-                ]
-            )
+            row = [
+                _color_line_cell(str(index), line_color),
+                _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+                _color_line_cell("pending", line_color),
+                _color_line_cell("-", line_color),
+                _color_line_cell("refreshing...", line_color),
+            ]
+            if has_errors:
+                row.append(_color_line_cell("-", line_color))
+            rows.append(row)
             continue
 
         if status != "ok":
-            rows.append(
-                [
-                    _color_line_cell(str(index), line_color),
-                    _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
-                    _color_line_cell("error", line_color),
-                    _color_line_cell("-", line_color),
-                    _color_line_cell("-", line_color),
-                    _color_line_cell(str(result.get("error") or "unknown error"), line_color),
-                ]
-            )
+            row = [
+                _color_line_cell(str(index), line_color),
+                _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+                _color_line_cell("error", line_color),
+                _color_line_cell("-", line_color),
+                _color_line_cell("-", line_color),
+            ]
+            if has_errors:
+                row.append(_color_line_cell(str(result.get("error") or "unknown error"), line_color))
+            rows.append(row)
             continue
 
         windows = result.get("windows") or []
@@ -299,16 +307,16 @@ def _format_text_usage(
                 _format_window_entry(window, line_color, now_ms=now_ms)
                 for window in windows
             )
-        rows.append(
-            [
-                _color_line_cell(str(index), line_color),
-                _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
-                _color_line_cell("ok", line_color),
-                _color_line_cell(str(result.get("plan") or "unknown"), line_color),
-                windows_text,
-                _color_line_cell("-", line_color),
-            ]
-        )
+        row = [
+            _color_line_cell(str(index), line_color),
+            _color_line_cell(str(result.get("label") or "<unknown>"), line_color),
+            _color_line_cell("ok", line_color),
+            _color_line_cell(str(result.get("plan") or "unknown"), line_color),
+            windows_text,
+        ]
+        if has_errors:
+            row.append(_color_line_cell("-", line_color))
+        rows.append(row)
 
     widths = [len(h) for h in headers]
     for row in rows:
@@ -338,6 +346,44 @@ def _format_window_entry(window: dict[str, Any], line_color: str, *, now_ms: int
     reset_value = _format_relative_reset(window.get("reset_at_ms"), now_ms=now_ms)
     reset_text = _color_line_cell(f"left={reset_value}", line_color)
     return f"{label_text} available={percent_text} {reset_text}"
+
+
+def _format_usage_json(results: list[dict[str, Any]], *, last_capture_time: str) -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    rows: list[dict[str, Any]] = []
+    for index, result in enumerate(results, start=1):
+        status = str(result.get("status") or "")
+        row: dict[str, Any] = {
+            "index": index,
+            "account": str(result.get("label") or "<unknown>"),
+            "status": status,
+            "plan": None,
+            "windows": [],
+            "error": None,
+        }
+        if status == "ok":
+            row["plan"] = result.get("plan")
+            windows_payload: list[dict[str, Any]] = []
+            windows = result.get("windows")
+            if isinstance(windows, list):
+                for window in windows:
+                    if not isinstance(window, dict):
+                        continue
+                    windows_payload.append(
+                        {
+                            "label": window.get("label"),
+                            "available_percent": _resolve_available_percent(window),
+                            "left": _format_relative_reset(window.get("reset_at_ms"), now_ms=now_ms),
+                        }
+                    )
+            row["windows"] = windows_payload
+        elif status != "pending":
+            row["error"] = result.get("error")
+        rows.append(row)
+    return {
+        "last_capture": last_capture_time,
+        "rows": rows,
+    }
 
 
 def _format_relative_reset(reset_at_ms: Any, *, now_ms: int | None = None) -> str:
@@ -683,7 +729,8 @@ def _handle_show_usage_tui(
     timeout: float,
     debug: bool,
     *,
-    as_json: bool,
+    dump_json: bool,
+    print_json: bool,
     json_output_dir: Path | None,
 ) -> int:
     store = load_store(store_path)
@@ -696,7 +743,8 @@ def _handle_show_usage_tui(
         return _handle_show_usage(
             store_path,
             timeout=timeout,
-            as_json=as_json,
+            dump_json=dump_json,
+            print_json=print_json,
             debug=debug,
             json_output_dir=json_output_dir,
         )
@@ -707,10 +755,13 @@ def _handle_show_usage_tui(
             return _handle_show_usage(
                 store_path,
                 timeout=timeout,
-                as_json=as_json,
+                dump_json=dump_json,
+                print_json=print_json,
                 debug=debug,
                 json_output_dir=json_output_dir,
             )
+        if print_json:
+            _eprint("--json is ignored in interactive --tui mode.")
 
         pending_results = []
         for account in accounts:
@@ -764,7 +815,7 @@ def _handle_show_usage_tui(
                 store["accounts"] = accounts
                 save_store(store_path, store)
             last_capture_time = _capture_timestamp()
-            if as_json and json_output_dir is not None:
+            if dump_json and json_output_dir is not None:
                 _write_json_api_snapshots(results, json_output_dir)
             if auto_refresh:
                 next_refresh_at = time.time() + AUTO_REFRESH_SECONDS
@@ -824,7 +875,8 @@ def _handle_show_usage_tui(
 def _handle_show_usage(
     store_path: Path,
     timeout: float,
-    as_json: bool,
+    dump_json: bool,
+    print_json: bool,
     debug: bool,
     *,
     json_output_dir: Path | None,
@@ -846,13 +898,22 @@ def _handle_show_usage(
         save_store(store_path, store)
 
     written_paths: list[Path] = []
-    if as_json and json_output_dir is not None:
+    if dump_json and json_output_dir is not None:
         written_paths = _write_json_api_snapshots(results, json_output_dir)
 
-    if not as_json:
-        sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
-        print(_format_text_usage(sorted_results, last_capture_time=_capture_timestamp()))
-    elif written_paths:
+    sorted_results = sorted(results, key=lambda item: _result_sort_key(item))
+    capture_time = _capture_timestamp()
+    if print_json:
+        print(
+            json.dumps(
+                _format_usage_json(sorted_results, last_capture_time=capture_time),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(_format_text_usage(sorted_results, last_capture_time=capture_time))
+    if written_paths:
         _eprint(f"Saved {len(written_paths)} JSON snapshot files to {json_output_dir}.")
 
     has_success = any(item["status"] == "ok" for item in results)
@@ -864,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv_list)
     store_path = _resolve_store_path(args.auth_file)
-    json_output_dir = Path(JSON_OUTPUT_DIR_NAME) if args.json else None
+    json_output_dir = Path(JSON_OUTPUT_DIR_NAME) if args.dump_json else None
 
     try:
         if not argv_list:
@@ -882,7 +943,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=float(args.timeout),
                 no_open=args.no_open,
                 debug=args.debug,
-                as_json=args.json,
+                dump_json=args.dump_json,
                 json_output_dir=json_output_dir,
             )
         if args.tui:
@@ -890,13 +951,15 @@ def main(argv: list[str] | None = None) -> int:
                 store_path,
                 timeout=float(args.timeout),
                 debug=args.debug,
-                as_json=args.json,
+                dump_json=args.dump_json,
+                print_json=args.json,
                 json_output_dir=json_output_dir,
             )
         return _handle_show_usage(
             store_path,
             timeout=float(args.timeout),
-            as_json=args.json,
+            dump_json=args.dump_json,
+            print_json=args.json,
             debug=args.debug,
             json_output_dir=json_output_dir,
         )
